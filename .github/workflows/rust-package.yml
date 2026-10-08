@@ -31,3 +31,5 @@ jobs:
         run: rustup toolchain install "${{ matrix.rust-version }}" --profile minimal --no-self-update
       - name: Run tests
         run: cargo +${{ matrix.rust-version }} test --locked --verbose
+      - name: Run optional subsystem tests
+        run: cargo +${{ matrix.rust-version }} test --locked --all-features --verbose

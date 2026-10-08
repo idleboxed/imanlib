@@ -4,6 +4,39 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Logical GUI actions shared by input decoders and application consumers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Action {
+    Up,
+    Down,
+    Left,
+    Right,
+    Activate,
+    Favourite,
+    Filters,
+    LowerFilters,
+    Trash,
+    Start,
+}
+
+impl Action {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "up" => Some(Self::Up),
+            "down" => Some(Self::Down),
+            "left" => Some(Self::Left),
+            "right" => Some(Self::Right),
+            "a" | "enter" => Some(Self::Activate),
+            "b" => Some(Self::Favourite),
+            "y" => Some(Self::Filters),
+            "x" => Some(Self::LowerFilters),
+            "select" | "delete" => Some(Self::Trash),
+            "start" => Some(Self::Start),
+            _ => None,
+        }
+    }
+}
+
 /// Commands forwarded by the session host for the GUI to handle.
 pub const CONTROL_COMMANDS: &[&str] = &[
     "igui.status",

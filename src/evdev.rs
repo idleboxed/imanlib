@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BSD-3-Clause
-//! Shared Linux input records and pure conversions; no device acquisition.
+//! Linux input records; read-only acquisition is optional and explicit.
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -70,3 +70,6 @@ pub fn find_retroarch_button_index(keys: &[u16], code: u16) -> Option<usize> {
         .position(|key| key == code)
         .filter(|_| code != 0)
 }
+
+#[cfg(all(feature = "input", target_os = "linux"))]
+pub mod linux;
