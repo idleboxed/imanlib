@@ -1,0 +1,33 @@
+name: Rust package
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Rust ${{ matrix.rust-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        rust-version: ["1.85.0", stable]
+
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+      TMPDIR: /dev/shm
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Set up Rust ${{ matrix.rust-version }}
+        run: rustup toolchain install "${{ matrix.rust-version }}" --profile minimal --no-self-update
+      - name: Run tests
+        run: cargo +${{ matrix.rust-version }} test --locked --verbose
