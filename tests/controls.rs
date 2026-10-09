@@ -234,3 +234,59 @@ fn raw_probe_uses_all_declared_evdev_profiles() {
     assert!(profiles.evdev[0].matches(3, 0x20bc, 0x5500, "ShanWan Twin USB Joystick"));
     assert!(profiles.evdev[1].matches(3, 0x2563, 0x0555, "ShanWan Twin USB Joystick"));
 }
+
+#[test]
+fn incomplete_optional_pairs_or_no_navigation_are_invalid_profiles() {
+    use imanlib::gamepad::profile::Profile;
+    for axes in [serde_json::json!({"left_stick_x":0}), serde_json::json!({"dpad_y":17}), serde_json::json!({})] {
+        let mut document: serde_json::Value = serde_json::from_slice(&common::control_bytes(common::BOARD_EVDEV_FILE)).unwrap();
+        document["axes"] = axes;
+        for key in ["up", "down", "left", "right"] { document["buttons"].as_object_mut().unwrap().remove(key); }
+
+        assert!(Profile::parse(&serde_json::to_vec(&document).unwrap()).is_err());
+    }
+}
+
+#[test]
+fn evdev_profile_validation_rejects_typos_and_inconsistent_bindings() {
+    use imanlib::gamepad::profile::Profile;
+    for (section, key, value) in [
+        ("buttons", "west", serde_json::json!(768)),
+        ("buttons", "west", serde_json::json!(21)),
+        ("buttons", "unknown", serde_json::json!(22)),
+        ("axes", "left_stick_x", serde_json::json!(16)),
+        ("axes", "left_stick_x", serde_json::json!(64)),
+        ("match", "vendor", serde_json::json!("nope")),
+    ] {
+        let mut d: serde_json::Value = serde_json::from_slice(&common::control_bytes(common::BOARD_EVDEV_FILE)).unwrap();
+        d[section][key] = value;
+        assert!(Profile::parse(&serde_json::to_vec(&d).unwrap()).is_err());
+    }
+    let duplicate = String::from_utf8(common::control_bytes(common::BOARD_EVDEV_FILE))
+        .unwrap()
+        .replace("\"west\": 45", "\"west\": 45, \"west\": 46");
+    assert!(Profile::parse(duplicate.as_bytes()).is_err());
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("evdev.json");
+    std::fs::write(&file, &common::control_bytes(common::BOARD_EVDEV_FILE)).unwrap();
+    assert!(Profile::load(&file)
+        .unwrap()
+        .matches(3, 0x20bc, 0x5500, "ShanWan Twin USB Joystick"));
+}
+
+#[test]
+fn evdev_profile_ignores_unknown_fields_and_requires_known_fields() {
+    use imanlib::gamepad::profile::Profile;
+    let mut document: serde_json::Value = serde_json::from_slice(&common::control_bytes(common::BOARD_EVDEV_FILE)).unwrap();
+    document["version"] = serde_json::json!(999);
+    document["future"] = serde_json::json!(true);
+    document["match"]["future"] = serde_json::json!(true);
+    document["axes"]["future"] = serde_json::json!(true);
+    assert!(Profile::parse(&serde_json::to_vec(&document).unwrap()).is_ok());
+
+    document.as_object_mut().unwrap().remove("backend");
+    let error = Profile::parse(&serde_json::to_vec(&document).unwrap())
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("missing field `backend`"));
+}
