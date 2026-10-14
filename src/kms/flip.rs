@@ -13,10 +13,13 @@ use crate::surface::Surface;
 /// I/O boundary for the real presenter and device-free fault-injection tests.
 /// Slots are always 0 or 1. `write` may allocate the inactive slot lazily.
 pub trait FlipIo {
+    /// Verify scanout ownership for the confirmed front-buffer slot.
     fn verify(&mut self, slot: usize) -> io::Result<()>;
+    /// Write the prepared frame into the selected inactive slot.
     fn write(&mut self, slot: usize, frame: &Surface) -> io::Result<()>;
     /// Queue exactly once, with EVENT and without ASYNC. No implicit retries.
     fn queue(&mut self, slot: usize) -> io::Result<()>;
+    /// Wait within the backend's bound for the queued flip completion event.
     fn wait(&mut self) -> io::Result<()>;
     /// Restore only our current framebuffer, or accept an unchanged initial CRTC.
     fn restore(&mut self, slot: usize) -> io::Result<()>;
@@ -37,18 +40,22 @@ pub struct DoubleBuffer {
 }
 
 impl DoubleBuffer {
+    /// Return the index of the confirmed scanout buffer.
     pub fn front(&self) -> usize {
         self.front
     }
 
+    /// Report whether this presenter has released its buffers.
     pub fn retired(&self) -> bool {
         self.retired
     }
 
+    /// Return the number of confirmed frame flips.
     pub fn completed(&self) -> u64 {
         self.completed
     }
 
+    /// Require an active presenter with no failed or pending flip.
     pub fn ready(&self) -> io::Result<()> {
         if self.failed || self.pending.is_some() || self.retired {
             return Err(io::Error::other(
@@ -58,6 +65,7 @@ impl DoubleBuffer {
         Ok(())
     }
 
+    /// Write the back buffer and submit a flip, retaining ownership until completion is confirmed.
     pub fn present(&mut self, io: &mut impl FlipIo, frame: &Surface) -> io::Result<()> {
         self.ready()?;
         let result = (|| {
@@ -183,8 +191,8 @@ pub fn wait_for_flip_event(
         }
         match card.receive_events() {
             Ok(events) => {
-                if let Some(event) = events.into_iter().find_map(|e| match e {
-                    Event::PageFlip(e) if e.crtc == crtc => Some(e),
+                if let Some(event) = events.into_iter().find_map(|event| match event {
+                    Event::PageFlip(flip) if flip.crtc == crtc => Some(flip),
                     _ => None,
                 }) {
                     return Ok(event);

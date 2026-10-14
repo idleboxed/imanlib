@@ -7,16 +7,17 @@ use embedded_graphics::{
     primitives::Rectangle,
     text::{Baseline, Text},
 };
+/// Draw the current input-probe status and guided observation prompts.
 pub fn draw<D: DrawTarget<Color = Rgb888>>(
     probe: &Probe,
     ms: u64,
     target: &mut D,
 ) -> Result<(), D::Error> {
     target.clear(Rgb888::new(15, 21, 29))?;
-    let text = |target: &mut D, value: &str, x, y, color| {
+    let text = |target: &mut D, value: &str, position_x, position_y, color| {
         Text::with_baseline(
             value,
-            Point::new(x, y),
+            Point::new(position_x, position_y),
             MonoTextStyle::new(&FONT_10X20, color),
             Baseline::Top,
         )
@@ -80,69 +81,69 @@ pub fn draw<D: DrawTarget<Color = Rgb888>>(
         probe.guide.notice.to_string()
     } else if probe.guide.ambiguous {
         "Несколько кнопок. START очистит шаг для повторного нажатия.".into()
-    } else if let Some(k) = probe.guide.candidate {
+    } else if let Some(channel) = probe.guide.candidate {
         format!(
             "Получено KEY {} из потока #{}. Проверьте подсказку и подтвердите START.",
-            k.code, k.generation
+            channel.code, channel.generation
         )
     } else {
         "Шаг сам не сменится. Без события START пропускает шаг или отсутствующий геймпад.".into()
     };
     text(target, &observation, 20, 122, white)?;
     for (slot, stream) in probe.streams.iter().enumerate() {
-        let x = 20 + (slot % 2) as i32 * 630;
-        let y = 156 + (slot / 2) as i32 * 126;
+        let position_x = 20 + (slot % 2) as i32 * 630;
+        let position_y = 156 + (slot / 2) as i32 * 126;
         target.fill_solid(
-            &Rectangle::new(Point::new(x, y), Size::new(610, 114)),
+            &Rectangle::new(Point::new(position_x, position_y), Size::new(610, 114)),
             Rgb888::new(23, 32, 42),
         )?;
-        if let Some(s) = stream {
+        if let Some(stream_item) = stream {
             text(
                 target,
-                &format!("Поток {} / #{}: {}", slot + 1, s.generation, s.info.path),
-                x + 10,
-                y + 5,
+                &format!("Поток {} / #{}: {}", slot + 1, stream_item.generation, stream_item.info.path),
+                position_x + 10,
+                position_y + 5,
                 green,
             )?;
-            let name: String = s
+            let name: String = stream_item
                 .info
                 .name
                 .chars()
-                .filter(|c| !c.is_control())
+                .filter(|color_item| !color_item.is_control())
                 .take(56)
                 .collect();
-            text(target, &name, x + 10, y + 29, white)?;
+            text(target, &name, position_x + 10, position_y + 29, white)?;
             text(
                 target,
                 &format!(
                     "KEY: {}  ABS: {}  события: {}  нажато: {}",
-                    s.info.key_codes.len(),
-                    s.info.axis_codes.len(),
-                    s.events,
-                    s.buttons_down().len()
+                    stream_item.info.key_codes.len(),
+                    stream_item.info.axis_codes.len(),
+                    stream_item.events,
+                    stream_item.buttons_down().len()
                 ),
-                x + 10,
-                y + 53,
+                position_x + 10,
+                position_y + 53,
                 white,
             )?;
-            let last = s
+            let last = stream_item
                 .last
-                .map(|e| {
+                .map(|error| {
                     format!(
                         "{} {} = {}",
-                        if e.kind == 1 { "KEY" } else { "ABS" },
-                        e.code,
-                        e.value
+                        if error.kind == 1 { "KEY" } else { "ABS" },
+                        error.code,
+                        error.value
                     )
                 })
                 .unwrap_or_else(|| "Нет событий".into());
-            text(target, &last, x + 10, y + 77, white)?;
+            text(target, &last, position_x + 10, position_y + 77, white)?;
         } else {
             text(
                 target,
                 &format!("Поток {}: нет подходящего устройства", slot + 1),
-                x + 10,
-                y + 5,
+                position_x + 10,
+                position_y + 5,
                 white,
             )?;
         }

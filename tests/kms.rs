@@ -35,7 +35,7 @@ impl Backend for Fake {
         self.0
             .borrow()
             .master_errno
-            .map_or(Ok(()), |n| Err(io::Error::from_raw_os_error(n)))
+            .map_or(Ok(()), |number| Err(io::Error::from_raw_os_error(number)))
     }
     fn release_master(&mut self) -> io::Result<()> {
         self.call("release")
@@ -114,7 +114,7 @@ fn every_partial_start_failure_cleans_only_attempted_resources() {
         assert!(Kms::start(Fake(state.clone()), &Surface::new(2, 2), false).is_err());
 
         let state = state.borrow();
-        let failed = state.calls.iter().position(|c| *c == failure).unwrap();
+        let failed = state.calls.iter().position(|calls_item| *calls_item == failure).unwrap();
         assert_eq!(state.calls[failed + 1..], cleanup, "{failure}");
     }
 }
@@ -172,7 +172,7 @@ fn changed_scanout_aborts_before_another_frame_write() {
             .borrow()
             .calls
             .iter()
-            .filter(|c| **c == "write")
+            .filter(|calls_item| **calls_item == "write")
             .count(),
         1
     );
@@ -209,7 +209,7 @@ fn idle_checks_do_not_upload_pixels() {
             .borrow()
             .calls
             .iter()
-            .filter(|c| **c == "write")
+            .filter(|calls_item| **calls_item == "write")
             .count(),
         1
     );
@@ -218,7 +218,7 @@ fn idle_checks_do_not_upload_pixels() {
             .borrow()
             .calls
             .iter()
-            .filter(|c| **c == "verify")
+            .filter(|calls_item| **calls_item == "verify")
             .count(),
         3
     );

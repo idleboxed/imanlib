@@ -11,6 +11,7 @@ use std::{
     io::{self, Write},
     os::unix::net::UnixStream,
     path::Path,
+    sync::{Arc, atomic::{AtomicU64, Ordering}},
     time::{Duration, Instant},
 };
 
@@ -92,23 +93,23 @@ fn multiple_clients_receive_only_their_own_service_outcomes() {
         ))
         .unwrap();
     }
-    let (mut a, mut b) = (None, None);
-    while a.is_none() || b.is_none() {
+    let (mut first_response, mut second_response) = (None, None);
+    while first_response.is_none() || second_response.is_none() {
         assert!(host.poll().is_empty());
         gui.poll().unwrap();
-        if a.is_none() {
-            a = first.poll().unwrap();
+        if first_response.is_none() {
+            first_response = first.poll().unwrap();
         }
-        if b.is_none() {
-            b = second.poll().unwrap();
+        if second_response.is_none() {
+            second_response = second.poll().unwrap();
         }
         assert!(Instant::now() < deadline);
     }
     assert!(
-        matches!(a.unwrap().outcome, Outcome::Done { result } if result["processed"] == "igui.input")
+        matches!(first_response.unwrap().outcome, Outcome::Done { result } if result["processed"] == "igui.input")
     );
     assert!(
-        matches!(b.unwrap().outcome, Outcome::Done { result } if result["processed"] == "igui.screenshot")
+        matches!(second_response.unwrap().outcome, Outcome::Done { result } if result["processed"] == "igui.screenshot")
     );
     drop(host);
     assert!(!path.exists());
@@ -160,17 +161,37 @@ fn service_disconnect_does_not_turn_pending_action_into_success() {
 }
 #[test]
 fn stalled_service_times_out_without_retry_or_false_acknowledgement() {
-    let (mut host, mut gui) = fixture();
+    let now = Arc::new(AtomicU64::new(0));
+    let clock = now.clone();
+    let origin = Instant::now();
+    let mut host = ImanStub::bind_with_clock(Path::new("/dev/shm"), move || {
+        origin + Duration::from_millis(clock.load(Ordering::Relaxed))
+    }).unwrap();
+    host.expect_gui(std::process::id()).unwrap();
+    let mut gui = Client::connect(host.path()).unwrap();
+    assert!(matches!(call(&mut host, &mut gui, "igui.attach").outcome, Outcome::Done { .. }));
     let mut client = Client::connect(host.path()).unwrap();
     client.send("igui.input", json!({"action":"b"})).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(6);
-    let mut deliveries = 0;
+    let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         assert!(host.poll().is_empty());
         gui.poll().unwrap();
         if gui.take_request().is_some() {
-            deliveries += 1;
+            break;
         }
+        assert!(client.poll().unwrap().is_none());
+        assert!(Instant::now() < deadline);
+    }
+
+    now.store(4_000, Ordering::Relaxed);
+    assert!(host.poll().is_empty());
+    assert!(client.poll().unwrap().is_none());
+    now.store(4_001, Ordering::Relaxed);
+
+    loop {
+        assert!(host.poll().is_empty());
+        gui.poll().unwrap();
+        assert!(gui.take_request().is_none(), "timed-out action must not be delivered twice");
         if let Some(response) = client.poll().unwrap() {
             assert!(
                 matches!(response.outcome, Outcome::Error { error } if error.code == "delivery_unknown")
@@ -178,9 +199,7 @@ fn stalled_service_times_out_without_retry_or_false_acknowledgement() {
             break;
         }
         assert!(Instant::now() < deadline);
-        std::thread::sleep(Duration::from_millis(2));
     }
-    assert_eq!(deliveries, 1);
 }
 
 #[test]

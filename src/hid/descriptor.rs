@@ -31,6 +31,7 @@ pub enum Control {
     Dpad,
 }
 impl Control {
+    /// Report whether this logical control uses a button rather than an axis or hat.
     pub(crate) fn is_button(self) -> bool {
         (self as usize) < Self::LeftStickX as usize
     }
@@ -47,14 +48,17 @@ impl Default for State {
     }
 }
 impl State {
+    /// Return the decoded value of one logical HID control.
     pub fn value(self, control: Control) -> i32 {
         self.0[control as usize]
     }
+    /// Report whether all buttons, sticks and the directional hat are released.
     pub fn neutral(self) -> bool {
-        self.0[..12].iter().all(|v| *v == 0)
-            && self.0[12..16].iter().all(|v| v.abs() <= 16383)
+        self.0[..12].iter().all(|variable| *variable == 0)
+            && self.0[12..16].iter().all(|variable| variable.abs() <= 16383)
             && self.value(Control::Dpad) == -1
     }
+    /// Translate decoded HID controls into logical menu buttons.
     pub fn menu_buttons(self) -> Buttons {
         let mut result = Buttons::default();
         for (control, action) in [
@@ -108,28 +112,28 @@ struct Field {
     null: bool,
 }
 impl Field {
-    fn new(control: Control, f: &VariableField) -> io::Result<Self> {
-        let min = i64::from(i32::from(f.logical_minimum));
+    fn new(control: Control, field_item: &VariableField) -> io::Result<Self> {
+        let min = i64::from(i32::from(field_item.logical_minimum));
         let max = if min < 0 {
-            i64::from(i32::from(f.logical_maximum))
+            i64::from(i32::from(field_item.logical_maximum))
         } else {
-            i64::from(u32::from(f.logical_maximum))
+            i64::from(u32::from(field_item.logical_maximum))
         };
-        let width = f
+        let width = field_item
             .bits
             .end
-            .checked_sub(f.bits.start)
-            .filter(|w| (1..=32).contains(w))
+            .checked_sub(field_item.bits.start)
+            .filter(|width_item| (1..=32).contains(width_item))
             .ok_or_else(|| invalid("unsupported HID field width"))?;
         let representable = if min < 0 {
             (-(1i64 << (width - 1)), (1i64 << (width - 1)) - 1)
         } else {
             (0, (1i64 << width) - 1)
         };
-        if f.attributes.constant
-            || f.attributes.relative
-            || f.attributes.buffered_bytes
-            || f.attributes.nonlinear
+        if field_item.attributes.constant
+            || field_item.attributes.relative
+            || field_item.attributes.buffered_bytes
+            || field_item.attributes.nonlinear
             || min >= max
             || min < representable.0
             || max > representable.1
@@ -140,11 +144,11 @@ impl Field {
         }
         Ok(Self {
             control,
-            start: f.bits.start,
+            start: field_item.bits.start,
             width,
             min,
             max,
-            null: f.attributes.null_state,
+            null: field_item.attributes.null_state,
         })
     }
     fn read(&self, data: &[u8]) -> io::Result<i32> {
@@ -182,10 +186,11 @@ pub struct Decoder {
     numbered: bool,
 }
 impl Decoder {
+    /// Validate a bounded HID descriptor against the selected controller profile.
     pub fn new(profile: &Profile, descriptor: &[u8]) -> io::Result<Self> {
         bounded_descriptor(descriptor)?;
         let parsed = hidparser::parse_report_descriptor(descriptor)
-            .map_err(|e| invalid(format!("HID descriptor: {e:?}")))?;
+            .map_err(|error| invalid(format!("HID descriptor: {error:?}")))?;
         if !parsed.bad_input_reports.is_empty()
             || !parsed.bad_output_reports.is_empty()
             || !parsed.bad_features.is_empty()
@@ -202,7 +207,7 @@ impl Decoder {
             let report = parsed
                 .input_reports
                 .iter()
-                .find(|r| r.report_id.map(u32::from).unwrap_or(0) == u32::from(id))
+                .find(|report_item| report_item.report_id.map(u32::from).unwrap_or(0) == u32::from(id))
                 .ok_or_else(|| invalid("HID controller report missing"))?;
             let bytes = report.size_in_bits.div_ceil(8);
             if bytes == 0 || bytes + usize::from(numbered) > MAX_REPORT_BYTES {
@@ -213,8 +218,8 @@ impl Decoder {
                 let matches: Vec<_> = report
                     .fields
                     .iter()
-                    .filter_map(|f| match f {
-                        ReportField::Variable(v) if u32::from(v.usage) == usage => Some(v),
+                    .filter_map(|field_item| match field_item {
+                        ReportField::Variable(variable) if u32::from(variable.usage) == usage => Some(variable),
                         _ => None,
                     })
                     .collect();
@@ -230,9 +235,11 @@ impl Decoder {
         }
         Ok(Self { reports, numbered })
     }
+    /// Iterate the input report IDs accepted by this decoder.
     pub fn report_ids(&self) -> impl Iterator<Item = u8> + '_ {
-        self.reports.iter().map(|r| r.id)
+        self.reports.iter().map(|report_item| report_item.id)
     }
+    /// Decode one validated input packet and return its report ID and logical control state.
     pub fn decode(&self, packet: &[u8]) -> io::Result<(u8, State)> {
         let (id, data) = if self.numbered {
             let (&id, data) = packet
@@ -245,7 +252,7 @@ impl Decoder {
         let report = self
             .reports
             .iter()
-            .find(|r| r.id == id)
+            .find(|report_item| report_item.id == id)
             .ok_or_else(|| invalid("unknown HID report ID"))?;
         if data.len() != report.bytes {
             return Err(invalid("incorrect HID report length"));
@@ -277,8 +284,8 @@ fn bounded_descriptor(bytes: &[u8]) -> io::Result<()> {
             .ok_or_else(|| invalid("truncated HID item"))?;
         pos += len;
         let mut value = 0u32;
-        for (i, byte) in data.iter().enumerate() {
-            value |= u32::from(*byte) << (8 * i);
+        for (index, byte) in data.iter().enumerate() {
+            value |= u32::from(*byte) << (8 * index);
         }
         match tag & 0xfc {
             0x74 => {

@@ -29,33 +29,34 @@ pub struct Profile {
 }
 
 impl Profile {
+    /// Decode and validate a bounded HID profile and its controller bindings.
     pub fn parse(bytes: &[u8]) -> io::Result<Self> {
         if bytes.len() > MAX_BYTES {
             return Err(invalid("HID profile exceeds 32 KiB"));
         }
-        let d: Document = serde_json::from_slice(bytes)
-            .map_err(|e| invalid(format!("invalid HID profile: {e}")))?;
-        if d.backend != "hidraw"
-            || d.access != "read-only"
-            || d.identity.bus != "usb"
+        let document_item: Document = serde_json::from_slice(bytes)
+            .map_err(|error_item| invalid(format!("invalid HID profile: {error_item}")))?;
+        if document_item.backend != "hidraw"
+            || document_item.access != "read-only"
+            || document_item.identity.bus != "usb"
         {
             return Err(invalid(
                 "unsupported HID profile backend/access/bus",
             ));
         }
-        d.identity.validate(&d.name)?;
-        let ids: Vec<_> = d.controllers.iter().map(|c| c.input_report_id).collect();
+        document_item.identity.validate(&document_item.name)?;
+        let ids: Vec<_> = document_item.controllers.iter().map(|controller| controller.input_report_id).collect();
         if ids.is_empty()
             || ids.len() > 8
             || ids
                 .iter()
-                .any(|id| ids.iter().filter(|v| *v == id).count() != 1)
+                .any(|id| ids.iter().filter(|value| *value == id).count() != 1)
             || (ids.len() > 1 && ids.contains(&0))
         {
             return Err(invalid("invalid or duplicate HID controller report IDs"));
         }
         let mut bindings = BTreeMap::new();
-        for (&control, text) in &d.controls {
+        for (&control, text) in &document_item.controls {
             let usage = match text.as_str() {
                 "GenericDesktop.X" => 0x10030,
                 "GenericDesktop.Y" => 0x10031,
@@ -78,22 +79,22 @@ impl Profile {
             };
             if control.is_button() != (usage >> 16 == 9)
                 || (control == Control::Dpad) != (usage == 0x10039)
-                || bindings.values().any(|v| *v == usage)
+                || bindings.values().any(|value| *value == usage)
             {
                 return Err(invalid("incompatible or duplicated HID usage binding"));
             }
             bindings.insert(control, usage);
         }
-        for c in [Control::South, Control::East, Control::West, Control::North] {
-            if !bindings.contains_key(&c) {
+        for controller in [Control::South, Control::East, Control::West, Control::North] {
+            if !bindings.contains_key(&controller) {
                 return Err(invalid("missing face button binding"));
             }
         }
-        for (x, y) in [
+        for (first_axis, second_axis) in [
             (Control::LeftStickX, Control::LeftStickY),
             (Control::RightStickX, Control::RightStickY),
         ] {
-            if bindings.contains_key(&x) != bindings.contains_key(&y) {
+            if bindings.contains_key(&first_axis) != bindings.contains_key(&second_axis) {
                 return Err(invalid("incomplete stick binding"));
             }
         }
@@ -101,16 +102,18 @@ impl Profile {
             return Err(invalid("HID profile has no navigation controls"));
         }
         Ok(Self {
-            document: d,
+            document: document_item,
             bindings,
             report_ids: ids,
         })
     }
 
+    /// Read and validate a HID profile from a bounded regular file.
     pub fn load(path: &Path) -> io::Result<Self> {
         controller_profile::read(path).and_then(|bytes| Self::parse(&bytes))
             .map_err(|error| io::Error::new(error.kind(), format!("input profile {}: {error}", path.display())))
     }
+    /// Match the USB bus, vendor, product and exact device name.
     pub fn matches(&self, bus: u32, vendor: u16, product: u16, name: &str) -> bool {
         self.document.identity.matches(bus, vendor, product) && name == self.document.name
     }

@@ -160,11 +160,11 @@ impl LinuxDrm {
         format.registration()?;
         let name = path
             .file_name()
-            .and_then(|n| n.to_str())
-            .and_then(|n| n.strip_prefix("card"));
+            .and_then(|count_item| count_item.to_str())
+            .and_then(|count_item| count_item.strip_prefix("card"));
         let minor = name
-            .and_then(|n| n.parse::<u32>().ok())
-            .filter(|n| *n < 64)
+            .and_then(|count_item| count_item.parse::<u32>().ok())
+            .filter(|count_item| *count_item < 64)
             .ok_or_else(|| io::Error::other("expected a DRM primary node named card0..card63"))?;
         if !path.is_absolute() {
             return Err(io::Error::other("DRM device path must be absolute"));
@@ -210,20 +210,20 @@ impl Backend for LinuxDrm {
     fn select_output(&mut self) -> io::Result<()> {
         let topology = self.topology(true)?;
         // Bounded records survive an early refusal; no binary data or per-frame dumps.
-        for c in &topology.connectors {
+        for card_item in &topology.connectors {
             eprintln!("IGUI DRM: connector={} connected={} hdmi={} current_encoder={:?} encoders={:?} modes={}",
-                c.id, c.connected, c.hdmi, c.current_encoder, c.encoders, c.modes.len());
+                card_item.id, card_item.connected, card_item.hdmi, card_item.current_encoder, card_item.encoders, card_item.modes.len());
         }
-        for e in &topology.encoders {
+        for error_item in &topology.encoders {
             eprintln!(
                 "IGUI DRM: encoder={} current_crtc={:?} possible_crtcs={:?}",
-                e.id, e.current_crtc, e.possible_crtcs
+                error_item.id, error_item.current_crtc, error_item.possible_crtcs
             );
         }
-        for c in &topology.crtcs {
+        for card_item in &topology.crtcs {
             eprintln!(
                 "IGUI DRM: crtc={} fb={:?} position={:?} mode={:?}",
-                c.id, c.framebuffer, c.position, c.mode
+                card_item.id, card_item.framebuffer, card_item.position, card_item.mode
             );
         }
         let output = topology.select_connector(self.connector)?;
@@ -320,7 +320,7 @@ impl Backend for LinuxDrm {
             if let Some(framebuffer) = slot.framebuffer {
                 match self.card.destroy_framebuffer(framebuffer) {
                     Ok(()) => slot.framebuffer = None,
-                    Err(e) => errors.push(e.to_string()),
+                    Err(error_item) => errors.push(error_item.to_string()),
                 }
             }
         }
@@ -333,8 +333,8 @@ impl Backend for LinuxDrm {
             if slot.framebuffer.is_some() {
                 errors.push("framebuffer still registered; buffer retained until FD close".into());
             } else if let Some(buffer) = slot.buffer.take() {
-                if let Err(e) = self.card.destroy_dumb_buffer(buffer) {
-                    errors.push(e.to_string());
+                if let Err(error_item) = self.card.destroy_dumb_buffer(buffer) {
+                    errors.push(error_item.to_string());
                 }
             }
         }

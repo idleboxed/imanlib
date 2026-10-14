@@ -90,21 +90,21 @@ fn hats_including_all_null_values_and_axes() {
         assert_eq!(state.value(Dpad), if hat < 8 { hat as i32 } else { -1 });
         assert_eq!(state.neutral(), hat >= 8);
     }
-    let mut p = packet(2, 0, 15);
-    p[1] = 0;
-    p[2] = 255;
-    p[3] = 255;
-    p[4] = 0;
-    let state = decoder.decode(&p).unwrap().1;
+    let mut profile_item = packet(2, 0, 15);
+    profile_item[1] = 0;
+    profile_item[2] = 255;
+    profile_item[3] = 255;
+    profile_item[4] = 0;
+    let state = decoder.decode(&profile_item).unwrap().1;
     assert_eq!(state.value(RightStickX), -32767);
     assert_eq!(state.value(RightStickY), 32767);
     assert_eq!(state.value(LeftStickX), 32767);
     assert_eq!(state.value(LeftStickY), -32767);
     assert!(state.menu_buttons().down(Action::Up));
     assert!(state.menu_buttons().down(Action::Right));
-    p[5] = 4;
+    profile_item[5] = 4;
     assert!(decoder
-        .decode(&p)
+        .decode(&profile_item)
         .unwrap()
         .1
         .menu_buttons()
@@ -112,10 +112,10 @@ fn hats_including_all_null_values_and_axes() {
 }
 #[test]
 fn profile_remaps_without_rust_changes() {
-    let mut p = document();
-    p["controls"]["west"] = json!("Button.1");
-    p["controls"]["north"] = json!("Button.4");
-    let decoder = Decoder::new(&profile(&p).unwrap(), DESCRIPTOR).unwrap();
+    let mut profile_item = document();
+    profile_item["controls"]["west"] = json!("Button.1");
+    profile_item["controls"]["north"] = json!("Button.4");
+    let decoder = Decoder::new(&profile(&profile_item).unwrap(), DESCRIPTOR).unwrap();
     assert!(decoder
         .decode(&packet(1, 1, 15))
         .unwrap()
@@ -145,15 +145,15 @@ fn changed_descriptor_moves_fields_without_fingerprint_or_fixed_offsets() {
 }
 #[test]
 fn unnumbered_signed_axes_and_short_packets() {
-    let mut p = document();
-    p["controllers"] = json!([{"input_report_id":0}]);
-    p["controls"] = json!({"north":"Button.1","east":"Button.2","south":"Button.3","west":"Button.4","left_stick_x":"GenericDesktop.X","left_stick_y":"GenericDesktop.Y"});
+    let mut profile_item = document();
+    profile_item["controllers"] = json!([{"input_report_id":0}]);
+    profile_item["controls"] = json!({"north":"Button.1","east":"Button.2","south":"Button.3","west":"Button.4","left_stick_x":"GenericDesktop.X","left_stick_y":"GenericDesktop.Y"});
     let descriptor = [
         5, 1, 9, 5, 0xa1, 1, 0x15, 0x81, 0x25, 0x7f, 0x75, 8, 0x95, 2, 9, 0x30, 9, 0x31, 0x81, 2,
         5, 9, 0x15, 0, 0x25, 1, 0x19, 1, 0x29, 4, 0x75, 1, 0x95, 4, 0x81, 2, 0x75, 4, 0x95, 1,
         0x81, 3, 0xc0,
     ];
-    let decoder = Decoder::new(&profile(&p).unwrap(), &descriptor).unwrap();
+    let decoder = Decoder::new(&profile(&profile_item).unwrap(), &descriptor).unwrap();
     assert!(decoder.decode(&[0, 0, 0]).unwrap().1.neutral());
     let (id, state) = decoder.decode(&[0x81, 0x7f, 8]).unwrap();
     assert_eq!(id, 0);
@@ -178,9 +178,9 @@ fn malformed_profiles_fail_closed() {
             json!([{"input_report_id":0},{"input_report_id":1}]),
         ),
     ] {
-        let mut p = document();
-        p[key] = value;
-        assert!(profile(&p).is_err(), "{p}");
+        let mut profile_item = document();
+        profile_item[key] = value;
+        assert!(profile(&profile_item).is_err(), "{profile_item}");
     }
     for usage in [
         "Button.0",
@@ -189,14 +189,14 @@ fn malformed_profiles_fail_closed() {
         "Button.1",
         "Keyboard.X",
     ] {
-        let mut p = document();
-        p["controls"]["west"] = json!(usage);
-        assert!(profile(&p).is_err());
+        let mut profile_item = document();
+        profile_item["controls"]["west"] = json!(usage);
+        assert!(profile(&profile_item).is_err());
     }
     for key in ["west", "left_stick_x"] {
-        let mut p = document();
-        p["controls"].as_object_mut().unwrap().remove(key);
-        assert!(profile(&p).is_err());
+        let mut profile_item = document();
+        profile_item["controls"].as_object_mut().unwrap().remove(key);
+        assert!(profile(&profile_item).is_err());
     }
     let duplicate = String::from_utf8(common::control_bytes(common::HID_FILE))
         .unwrap()
@@ -210,15 +210,15 @@ fn malformed_profiles_fail_closed() {
 
 #[test]
 fn profile_ignores_unknown_fields_and_requires_known_fields() {
-    let mut p = document();
-    p["version"] = json!(999);
-    p["future"] = json!(true);
-    p["match"]["future"] = json!(true);
-    p["controllers"][0]["future"] = json!(true);
-    assert!(profile(&p).is_ok());
+    let mut profile_item = document();
+    profile_item["version"] = json!(999);
+    profile_item["future"] = json!(true);
+    profile_item["match"]["future"] = json!(true);
+    profile_item["controllers"][0]["future"] = json!(true);
+    assert!(profile(&profile_item).is_ok());
 
-    p.as_object_mut().unwrap().remove("backend");
-    assert!(profile(&p)
+    profile_item.as_object_mut().unwrap().remove("backend");
+    assert!(profile(&profile_item)
         .err()
         .unwrap()
         .to_string()
@@ -256,12 +256,12 @@ fn descriptor_missing_ambiguous_relative_and_resource_limits_are_rejected() {
 #[test]
 fn wrong_report_id_size_or_channel_definition_is_rejected() {
     let decoder = decode();
-    for p in [vec![], vec![3; 8], vec![1; 7], vec![1; 9]] {
-        assert!(decoder.decode(&p).is_err());
+    for profile_item in [vec![], vec![3; 8], vec![1; 7], vec![1; 9]] {
+        assert!(decoder.decode(&profile_item).is_err());
     }
-    let mut p = document();
-    p["controllers"] = json!([{"input_report_id":1}]);
-    assert!(Decoder::new(&profile(&p).unwrap(), DESCRIPTOR).is_err());
+    let mut profile_item = document();
+    profile_item["controllers"] = json!([{"input_report_id":1}]);
+    assert!(Decoder::new(&profile(&profile_item).unwrap(), DESCRIPTOR).is_err());
 }
 #[test]
 fn replay_measured_simultaneous_two_pads_without_state_merging() {
@@ -278,7 +278,7 @@ fn replay_measured_simultaneous_two_pads_without_state_merging() {
         assert_eq!(states[1].value(West), 0);
     }
     assert_eq!(simultaneous, 247);
-    assert!(states.iter().all(|s| s.neutral()));
+    assert!(states.iter().all(|state_item| state_item.neutral()));
 }
 #[test]
 fn profile_loading_rejects_nonfiles_symlinks_and_oversize() {

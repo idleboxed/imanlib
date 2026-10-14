@@ -181,7 +181,7 @@ fn foreign_owner_before_or_during_copy_prevents_submission() {
         assert!(state.present(&mut io, &Surface::new(1, 1)).is_err());
 
         assert_eq!(io.calls, calls);
-        assert!(!calls.iter().any(|c| c.starts_with("queue")));
+        assert!(!calls.iter().any(|calls_item| calls_item.starts_with("queue")));
         assert!(!state.retired());
     }
 }
@@ -251,7 +251,7 @@ fn timeout_reserves_both_buffers_until_completion_even_if_readback_would_change(
     assert!(!state.retired());
     assert_eq!(state.front(), 0);
     assert_eq!(io.pending, Some(1));
-    assert!(!io.calls.iter().any(|c| c.starts_with("restore")));
+    assert!(!io.calls.iter().any(|calls_item| calls_item.starts_with("restore")));
     let count = io.calls.len();
     assert!(state.present(&mut io, &Surface::new(1, 1)).is_err());
     assert_eq!(io.calls.len(), count);
@@ -262,7 +262,7 @@ fn timeout_reserves_both_buffers_until_completion_even_if_readback_would_change(
     assert_eq!(state.front(), 1);
     assert!(state.retired());
     assert_eq!(
-        io.calls.iter().filter(|c| c.starts_with("queue")).count(),
+        io.calls.iter().filter(|calls_item| calls_item.starts_with("queue")).count(),
         1
     );
     assert_eq!(io.calls.last().unwrap(), "restore1");
@@ -283,7 +283,7 @@ fn interrupted_submission_is_uncertain_and_requires_an_event_before_restore() {
     assert!(state.finish(&mut io).is_err());
 
     assert!(!state.retired());
-    assert!(!io.calls.iter().any(|c| c.starts_with("restore")));
+    assert!(!io.calls.iter().any(|calls_item| calls_item.starts_with("restore")));
     // Simulate a late event from an ioctl accepted despite interruption.
     io.pending = Some(1);
     io.fail = None;
@@ -326,8 +326,8 @@ fn event(crtc_id: u32, user_data: u64) -> Vec<u8> {
     bytes.extend(2_u32.to_ne_bytes());
     bytes.extend(32_u32.to_ne_bytes());
     bytes.extend(user_data.to_ne_bytes());
-    for n in [1_u32, 2000, 3, crtc_id] {
-        bytes.extend(n.to_ne_bytes());
+    for number in [1_u32, 2000, 3, crtc_id] {
+        bytes.extend(number.to_ne_bytes());
     }
     bytes
 }
@@ -422,10 +422,10 @@ fn event_wait_preserves_raw_sequence_and_timestamp_for_diagnostics() {
     let (card, mut writer) = fixture();
     writer.write_all(&event(0, 59)).unwrap();
 
-    let e = imanlib::kms::flip::wait_for_flip_event(&card, handle(59), Duration::from_millis(100))
+    let error_item = imanlib::kms::flip::wait_for_flip_event(&card, handle(59), Duration::from_millis(100))
         .unwrap();
 
-    assert_eq!(e.frame, 3);
-    assert_eq!(e.duration, Duration::from_micros(1_002_000));
-    assert_eq!(e.crtc, handle(59));
+    assert_eq!(error_item.frame, 3);
+    assert_eq!(error_item.duration, Duration::from_micros(1_002_000));
+    assert_eq!(error_item.crtc, handle(59));
 }

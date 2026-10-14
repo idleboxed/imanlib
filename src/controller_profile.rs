@@ -9,6 +9,7 @@ use std::{
 };
 
 pub(crate) const MAX_BYTES: usize = 32 * 1024;
+/// Construct an invalid-profile error without accessing any device.
 pub(crate) fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
@@ -19,11 +20,12 @@ pub(crate) struct Identity {
     pub product: String,
 }
 impl Identity {
+    /// Require supported USB identity spelling and a bounded device name.
     pub fn validate(&self, name: &str) -> io::Result<()> {
-        let hex = |s: &str| {
-            s.len() == 4
-                && s.bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        let hex = |text: &str| {
+            text.len() == 4
+                && text.bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         };
         if self.bus != "usb"
             || !hex(&self.vendor)
@@ -36,12 +38,14 @@ impl Identity {
         }
         Ok(())
     }
+    /// Report whether the USB bus, vendor and product match this identity.
     pub fn matches(&self, bus: u32, vendor: u16, product: u16) -> bool {
         bus == 3
             && u16::from_str_radix(&self.vendor, 16) == Ok(vendor)
             && u16::from_str_radix(&self.product, 16) == Ok(product)
     }
 }
+/// Read at most one bounded regular profile file without following its final symlink.
 pub(crate) fn read(path: &Path) -> io::Result<Vec<u8>> {
     let mut options = OpenOptions::new();
     options.read(true);
@@ -62,7 +66,8 @@ pub(crate) fn read(path: &Path) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 // Unlike BTreeMap's default deserializer, reject duplicate JSON keys.
-pub(crate) fn unique_map<'de, D, K, V>(d: D) -> Result<BTreeMap<K, V>, D::Error>
+/// Decode profile bindings while rejecting duplicate keys rather than silently replacing them.
+pub(crate) fn unique_map<'de, D, K, V>(deserializer: D) -> Result<BTreeMap<K, V>, D::Error>
 where
     D: Deserializer<'de>,
     K: Deserialize<'de> + Ord,
@@ -73,15 +78,15 @@ where
         for Visitor<K, V>
     {
         type Value = BTreeMap<K, V>;
-        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            f.write_str("unique input bindings")
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("unique input bindings")
         }
         fn visit_map<A: serde::de::MapAccess<'de>>(
             self,
-            mut a: A,
+            mut access: A,
         ) -> Result<Self::Value, A::Error> {
             let mut result = BTreeMap::new();
-            while let Some((key, value)) = a.next_entry()? {
+            while let Some((key, value)) = access.next_entry()? {
                 if result.insert(key, value).is_some() {
                     return Err(A::Error::custom("duplicate input binding"));
                 }
@@ -89,5 +94,5 @@ where
             Ok(result)
         }
     }
-    d.deserialize_map(Visitor(std::marker::PhantomData))
+    deserializer.deserialize_map(Visitor(std::marker::PhantomData))
 }

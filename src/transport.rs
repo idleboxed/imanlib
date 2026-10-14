@@ -47,6 +47,7 @@ pub struct Channel {
     output_started: Option<Instant>,
 }
 impl Channel {
+    /// Configure a Unix stream for nonblocking, bounded framed JSON transport.
     pub fn new(stream: UnixStream, limit: usize) -> io::Result<Self> {
         stream.set_nonblocking(true)?;
         Ok(Self {
@@ -62,15 +63,19 @@ impl Channel {
             output_started: None,
         })
     }
+    /// Borrow the held Unix stream without transferring its ownership.
     pub fn stream(&self) -> &UnixStream {
         &self.stream
     }
+    /// Report whether any queued frame still needs writing.
     pub fn pending_output(&self) -> bool {
         !self.output.is_empty()
     }
+    /// Report whether a frame read has begun but has not completed.
     pub(crate) fn has_partial_input(&self) -> bool {
         self.input_started.is_some()
     }
+    /// Serialize and queue one bounded frame, rejecting an oversized frame or full output queue.
     pub fn queue(&mut self, value: &impl Serialize, limit: usize) -> io::Result<()> {
         if self.output.len() >= 4 {
             return Err(io::Error::other("IPC output limit exceeded"));
@@ -89,10 +94,11 @@ impl Channel {
         self.output_started.get_or_insert_with(Instant::now);
         Ok(())
     }
+    /// Write as much queued output as possible without blocking; report timeout and I/O failures.
     pub fn flush(&mut self) -> io::Result<()> {
         if self
             .output_started
-            .is_some_and(|t| t.elapsed() > IO_TIMEOUT)
+            .is_some_and(|timestamp| timestamp.elapsed() > IO_TIMEOUT)
         {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
@@ -102,16 +108,16 @@ impl Channel {
         if let Some(front) = self.output.front() {
             match self.stream.write(&front[self.sent..]) {
                 Ok(0) => return Err(io::Error::new(io::ErrorKind::WriteZero, "IPC peer closed")),
-                Ok(n) => self.sent += n,
-                Err(e)
+                Ok(bytes_processed) => self.sent += bytes_processed,
+                Err(error)
                     if matches!(
-                        e.kind(),
+                        error.kind(),
                         io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
                     ) =>
                 {
                     return Ok(())
                 }
-                Err(e) => return Err(e),
+                Err(error) => return Err(error),
             }
             if self.sent == front.len() {
                 self.output.pop_front();
@@ -121,12 +127,13 @@ impl Channel {
         }
         Ok(())
     }
+    /// Read and decode one complete bounded frame, or return None until more bytes arrive.
     pub fn receive<T: DeserializeOwned>(&mut self) -> io::Result<Option<T>> {
         self.receive_frame().map(|incoming| incoming.map(|(value, _)| value))
     }
     /// Retain the wire size so ignored JSON fields still count against message limits.
     pub(crate) fn receive_frame<T: DeserializeOwned>(&mut self) -> io::Result<Option<(T, usize)>> {
-        if self.input_started.is_some_and(|t| t.elapsed() > IO_TIMEOUT) {
+        if self.input_started.is_some_and(|timestamp| timestamp.elapsed() > IO_TIMEOUT) {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "IPC partial frame timed out",
@@ -146,10 +153,10 @@ impl Channel {
                         "IPC peer disconnected",
                     ))
                 }
-                Ok(n) => {
+                Ok(bytes_processed) => {
                     self.input_started.get_or_insert_with(Instant::now);
                     if self.header_used < 4 {
-                        self.header_used += n;
+                        self.header_used += bytes_processed;
                         if self.header_used == 4 {
                             let size = u32::from_be_bytes(self.header) as usize;
                             if size == 0 || size > self.limit {
@@ -158,7 +165,7 @@ impl Channel {
                             self.body.resize(size, 0);
                         }
                     } else {
-                        self.body_used += n;
+                        self.body_used += bytes_processed;
                         if self.body_used == self.body.len() {
                             let size = self.body.len();
                             // Deserializer diagnostics can include untrusted field values.
@@ -173,15 +180,15 @@ impl Channel {
                         }
                     }
                 }
-                Err(e)
+                Err(error)
                     if matches!(
-                        e.kind(),
+                        error.kind(),
                         io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
                     ) =>
                 {
                     return Ok(None)
                 }
-                Err(e) => return Err(e),
+                Err(error) => return Err(error),
             }
         }
         Ok(None)

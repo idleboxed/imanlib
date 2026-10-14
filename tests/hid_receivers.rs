@@ -43,17 +43,17 @@ impl Device for Pad {
         &self.info
     }
     fn read(&mut self, packet: &mut [u8]) -> io::Result<Option<usize>> {
-        let mut s = self.state.borrow_mut();
-        s.reads += 1;
-        if s.failed {
+        let mut state_item = self.state.borrow_mut();
+        state_item.reads += 1;
+        if state_item.failed {
             return Err(io::Error::other("synthetic disconnection"));
         }
-        if s.interrupted {
+        if state_item.interrupted {
             return Err(io::ErrorKind::Interrupted.into());
         }
-        Ok(s.queue.pop_front().map(|p| {
-            packet[..p.len()].copy_from_slice(&p);
-            p.len()
+        Ok(state_item.queue.pop_front().map(|packet_item| {
+            packet[..packet_item.len()].copy_from_slice(&packet_item);
+            packet_item.len()
         }))
     }
 }
@@ -63,17 +63,17 @@ struct Devices {
 impl Source for Devices {
     fn discover(&mut self) -> io::Result<Vec<PathBuf>> {
         Ok((0..self.fixtures.len())
-            .map(|i| PathBuf::from(format!("/synthetic/hidraw{i}")))
+            .map(|index| PathBuf::from(format!("/synthetic/hidraw{index}")))
             .collect())
     }
     fn open(&mut self, path: &Path) -> io::Result<Box<dyn Device>> {
-        let i: usize = path
+        let index: usize = path
             .to_str()
             .unwrap()
             .trim_start_matches("/synthetic/hidraw")
             .parse()
             .unwrap();
-        let state = self.fixtures[i].clone();
+        let state = self.fixtures[index].clone();
         if state.borrow().denied {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
@@ -93,8 +93,8 @@ impl Source for Devices {
         }))
     }
 }
-fn send(f: &Rc<RefCell<Fixture>>, id: u8, buttons: u16) {
-    f.borrow_mut().queue.push_back(vec![
+fn send(field: &Rc<RefCell<Fixture>>, id: u8, buttons: u16) {
+    field.borrow_mut().queue.push_back(vec![
         id,
         128,
         128,
@@ -105,8 +105,8 @@ fn send(f: &Rc<RefCell<Fixture>>, id: u8, buttons: u16) {
         0,
     ]);
 }
-fn setup(n: usize) -> (Receivers<Devices>, Vec<Rc<RefCell<Fixture>>>) {
-    let fixtures: Vec<_> = (0..n)
+fn setup(count: usize) -> (Receivers<Devices>, Vec<Rc<RefCell<Fixture>>>) {
+    let fixtures: Vec<_> = (0..count)
         .map(|_| Rc::new(RefCell::new(Fixture::default())))
         .collect();
     let receivers = Receivers::new(
@@ -117,137 +117,137 @@ fn setup(n: usize) -> (Receivers<Devices>, Vec<Rc<RefCell<Fixture>>>) {
     );
     (receivers, fixtures)
 }
-fn arm(r: &mut Receivers<Devices>, f: &[Rc<RefCell<Fixture>>]) {
-    for pad in f {
+fn arm(record: &mut Receivers<Devices>, field: &[Rc<RefCell<Fixture>>]) {
+    for pad in field {
         send(pad, 1, 0);
         send(pad, 2, 0);
     }
-    assert!(!r.poll(Duration::ZERO).any());
-    assert!(!r.poll(Duration::from_millis(1)).any());
-    assert!(r.owner().is_none());
-    send(&f[0], 1, 8);
-    send(&f[0], 1, 0);
-    assert!(!r.poll(Duration::from_millis(2)).any());
-    assert!(r.owner().is_some());
-    assert!(!r.poll(Duration::from_millis(3)).any());
+    assert!(!record.poll(Duration::ZERO).any());
+    assert!(!record.poll(Duration::from_millis(1)).any());
+    assert!(record.owner().is_none());
+    send(&field[0], 1, 8);
+    send(&field[0], 1, 0);
+    assert!(!record.poll(Duration::from_millis(2)).any());
+    assert!(record.owner().is_some());
+    assert!(!record.poll(Duration::from_millis(3)).any());
 }
 #[test]
 fn construction_is_pure_and_two_receivers_have_four_independent_channels() {
-    let (mut r, f) = setup(2);
-    assert!(f.iter().all(|s| s.borrow().opened == 0));
-    arm(&mut r, &f);
-    let owner = r.owner().unwrap();
+    let (mut record, field) = setup(2);
+    assert!(field.iter().all(|state_item| state_item.borrow().opened == 0));
+    arm(&mut record, &field);
+    let owner = record.owner().unwrap();
     assert_eq!(owner.report_id, 1);
-    send(&f[0], 1, 8);
-    send(&f[0], 2, 2);
-    send(&f[1], 1, 1);
-    send(&f[1], 2, 4);
+    send(&field[0], 1, 8);
+    send(&field[0], 2, 2);
+    send(&field[1], 1, 1);
+    send(&field[1], 2, 4);
 
-    let buttons = r.poll(Duration::from_millis(2));
+    let buttons = record.poll(Duration::from_millis(2));
     assert!(buttons.down(Action::LowerFilters));
     assert!(!buttons.down(Action::Favourite));
-    let snapshots = r.snapshots();
+    let snapshots = record.snapshots();
     assert_eq!(snapshots.len(), 4);
     assert_eq!(snapshots[0].state.value(Control::West), 1);
     assert_eq!(snapshots[1].state.value(Control::East), 1);
     assert_eq!(snapshots[2].state.value(Control::North), 1);
     assert_eq!(snapshots[3].state.value(Control::South), 1);
     assert_ne!(snapshots[0].id, snapshots[2].id);
-    assert_eq!(r.owner(), Some(owner));
-    drop(r);
-    assert!(f.iter().all(|s| s.borrow().closed == 1));
+    assert_eq!(record.owner(), Some(owner));
+    drop(record);
+    assert!(field.iter().all(|state_item| state_item.borrow().closed == 1));
 }
 #[test]
 fn taps_are_preserved_but_initial_held_buttons_require_release() {
-    let (mut r, f) = setup(1);
-    send(&f[0], 1, 8);
-    assert!(!r.poll(Duration::ZERO).any());
-    assert!(!r.poll(Duration::from_millis(1)).any());
-    send(&f[0], 1, 0);
-    assert!(!r.poll(Duration::from_millis(2)).any());
-    send(&f[0], 1, 8);
-    send(&f[0], 1, 0);
-    assert!(!r.poll(Duration::from_millis(3)).any());
-    assert!(!r.poll(Duration::from_millis(4)).any());
-    send(&f[0], 1, 8);
-    send(&f[0], 1, 0);
-    assert!(r.poll(Duration::from_millis(5)).down(Action::LowerFilters));
+    let (mut record, field) = setup(1);
+    send(&field[0], 1, 8);
+    assert!(!record.poll(Duration::ZERO).any());
+    assert!(!record.poll(Duration::from_millis(1)).any());
+    send(&field[0], 1, 0);
+    assert!(!record.poll(Duration::from_millis(2)).any());
+    send(&field[0], 1, 8);
+    send(&field[0], 1, 0);
+    assert!(!record.poll(Duration::from_millis(3)).any());
+    assert!(!record.poll(Duration::from_millis(4)).any());
+    send(&field[0], 1, 8);
+    send(&field[0], 1, 0);
+    assert!(record.poll(Duration::from_millis(5)).down(Action::LowerFilters));
 }
 #[test]
 fn late_channel_is_not_armed_by_another_channels_neutral() {
-    let (mut r, f) = setup(1);
-    send(&f[0], 1, 0);
-    r.poll(Duration::ZERO);
-    r.poll(Duration::from_millis(1));
-    send(&f[0], 2, 8);
-    r.poll(Duration::from_millis(2));
-    assert!(!r.snapshots()[1].ready);
-    send(&f[0], 2, 0);
-    r.poll(Duration::from_millis(3));
-    assert!(r.snapshots()[1].ready);
+    let (mut record, field) = setup(1);
+    send(&field[0], 1, 0);
+    record.poll(Duration::ZERO);
+    record.poll(Duration::from_millis(1));
+    send(&field[0], 2, 8);
+    record.poll(Duration::from_millis(2));
+    assert!(!record.snapshots()[1].ready);
+    send(&field[0], 2, 0);
+    record.poll(Duration::from_millis(3));
+    assert!(record.snapshots()[1].ready);
 }
 #[test]
 fn malformed_packet_closes_receiver_and_reassignment_needs_neutral() {
-    let (mut r, f) = setup(2);
-    arm(&mut r, &f);
-    send(&f[1], 1, 8);
-    f[0].borrow_mut().queue.push_back(vec![1]);
-    assert!(!r.poll(Duration::from_millis(2)).any());
-    assert_eq!(f[0].borrow().closed, 1);
-    assert!(!r.poll(Duration::from_millis(3)).any());
-    send(&f[1], 1, 0);
-    assert!(!r.poll(Duration::from_millis(4)).any());
-    send(&f[1], 1, 8);
-    assert!(r.poll(Duration::from_millis(5)).down(Action::LowerFilters));
+    let (mut record, field) = setup(2);
+    arm(&mut record, &field);
+    send(&field[1], 1, 8);
+    field[0].borrow_mut().queue.push_back(vec![1]);
+    assert!(!record.poll(Duration::from_millis(2)).any());
+    assert_eq!(field[0].borrow().closed, 1);
+    assert!(!record.poll(Duration::from_millis(3)).any());
+    send(&field[1], 1, 0);
+    assert!(!record.poll(Duration::from_millis(4)).any());
+    send(&field[1], 1, 8);
+    assert!(record.poll(Duration::from_millis(5)).down(Action::LowerFilters));
 }
 #[test]
 fn reconnect_reusing_same_node_gets_new_generation_and_no_old_press() {
-    let (mut r, f) = setup(1);
-    arm(&mut r, &f);
-    let old = r.owner().unwrap();
-    f[0].borrow_mut().failed = true;
-    r.poll(Duration::from_millis(2));
-    assert!(!r.connected());
-    f[0].borrow_mut().failed = false;
-    send(&f[0], 1, 8);
-    assert!(!r.poll(Duration::from_secs(2)).any());
-    assert!(r.owner().is_none());
-    assert_eq!(f[0].borrow().opened, 2);
-    assert!(!r.poll(Duration::from_secs(3)).any());
-    send(&f[0], 1, 0);
-    assert!(!r.poll(Duration::from_millis(3001)).any());
-    send(&f[0], 1, 8);
-    assert!(!r.poll(Duration::from_millis(3002)).any());
-    assert_ne!(r.owner().unwrap(), old);
+    let (mut record, field) = setup(1);
+    arm(&mut record, &field);
+    let old = record.owner().unwrap();
+    field[0].borrow_mut().failed = true;
+    record.poll(Duration::from_millis(2));
+    assert!(!record.connected());
+    field[0].borrow_mut().failed = false;
+    send(&field[0], 1, 8);
+    assert!(!record.poll(Duration::from_secs(2)).any());
+    assert!(record.owner().is_none());
+    assert_eq!(field[0].borrow().opened, 2);
+    assert!(!record.poll(Duration::from_secs(3)).any());
+    send(&field[0], 1, 0);
+    assert!(!record.poll(Duration::from_millis(3001)).any());
+    send(&field[0], 1, 8);
+    assert!(!record.poll(Duration::from_millis(3002)).any());
+    assert_ne!(record.owner().unwrap(), old);
 }
 #[test]
 fn denied_receiver_does_not_block_another_or_retry_each_frame() {
-    let (mut r, f) = setup(2);
-    f[0].borrow_mut().denied = true;
-    arm(&mut r, &f[1..]);
-    send(&f[1], 1, 8);
-    assert!(r.poll(Duration::from_millis(2)).down(Action::LowerFilters));
-    assert_eq!(r.snapshots().len(), 2);
-    assert_eq!(f[0].borrow().opened, 0);
+    let (mut record, field) = setup(2);
+    field[0].borrow_mut().denied = true;
+    arm(&mut record, &field[1..]);
+    send(&field[1], 1, 8);
+    assert!(record.poll(Duration::from_millis(2)).down(Action::LowerFilters));
+    assert_eq!(record.snapshots().len(), 2);
+    assert_eq!(field[0].borrow().opened, 0);
 }
 #[test]
 fn flood_and_interrupts_are_bounded_and_discard_partial_actions() {
-    let (mut r, f) = setup(1);
-    arm(&mut r, &f);
+    let (mut record, field) = setup(1);
+    arm(&mut record, &field);
     for _ in 0..300 {
-        send(&f[0], 1, 8);
+        send(&field[0], 1, 8);
     }
-    let reads = f[0].borrow().reads;
-    assert!(!r.poll(Duration::from_millis(2)).any());
-    assert_eq!(f[0].borrow().reads - reads, 256);
-    send(&f[0], 1, 0);
-    assert!(!r.poll(Duration::from_millis(3)).any());
-    send(&f[0], 1, 8);
-    assert!(r.poll(Duration::from_millis(4)).down(Action::LowerFilters));
-    f[0].borrow_mut().interrupted = true;
-    let reads = f[0].borrow().reads;
-    assert!(!r.poll(Duration::from_millis(5)).any());
-    assert_eq!(f[0].borrow().reads - reads, 256);
+    let reads = field[0].borrow().reads;
+    assert!(!record.poll(Duration::from_millis(2)).any());
+    assert_eq!(field[0].borrow().reads - reads, 256);
+    send(&field[0], 1, 0);
+    assert!(!record.poll(Duration::from_millis(3)).any());
+    send(&field[0], 1, 8);
+    assert!(record.poll(Duration::from_millis(4)).down(Action::LowerFilters));
+    field[0].borrow_mut().interrupted = true;
+    let reads = field[0].borrow().reads;
+    assert!(!record.poll(Duration::from_millis(5)).any());
+    assert_eq!(field[0].borrow().reads - reads, 256);
 }
 #[test]
 fn fresh_press_moves_ownership_between_report_ids_without_reopening_or_merging() {
@@ -351,11 +351,11 @@ fn capture_replay_preserves_all_four_start_sequences() {
     let mut starts = BTreeMap::new();
     let mut all_west = false;
     for line in include_str!("fixtures/shanwan-four-pads.jsonl").lines() {
-        let v: serde_json::Value = serde_json::from_str(line).unwrap();
-        if v["event"] != "state" {
+        let value_item: serde_json::Value = serde_json::from_str(line).unwrap();
+        if value_item["event"] != "state" {
             continue;
         }
-        let bytes = v["report_hex"]
+        let bytes = value_item["report_hex"]
             .as_str()
             .unwrap()
             .as_bytes()
@@ -363,12 +363,12 @@ fn capture_replay_preserves_all_four_start_sequences() {
             .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
             .collect::<Vec<_>>();
         let (id, state) = decoder.decode(&bytes).unwrap();
-        let key = (v["node"].as_str().unwrap().to_owned(), id);
+        let key = (value_item["node"].as_str().unwrap().to_owned(), id);
         let old: imanlib::hid::State = states.insert(key.clone(), state).unwrap_or_default();
         if state.value(Control::Start) == 1 && old.value(Control::Start) == 0 {
             *starts.entry(key).or_insert(0) += 1;
         }
-        all_west |= states.len() == 4 && states.values().all(|s| s.value(Control::West) == 1);
+        all_west |= states.len() == 4 && states.values().all(|state_item| state_item.value(Control::West) == 1);
     }
     assert_eq!(
         starts,
@@ -394,23 +394,23 @@ fn linux_source_refuses_non_hidraw_paths_without_opening_devices() {
 
 #[test]
 fn passive_hid_diagnostics_count_packets_without_merging_channels_or_reading_snapshots_again() {
-    let (mut r, f) = setup(2);
-    r.enable_diagnostics();
-    assert!(f.iter().all(|s| s.borrow().opened == 0));
-    arm(&mut r, &f);
-    send(&f[0], 1, 8);
-    send(&f[1], 2, 2);
-    assert!(r.poll(Duration::from_millis(2)).down(Action::LowerFilters));
-    let reads = f[0].borrow().reads;
-    let report = r.diagnostics();
+    let (mut record, field) = setup(2);
+    record.enable_diagnostics();
+    assert!(field.iter().all(|state_item| state_item.borrow().opened == 0));
+    arm(&mut record, &field);
+    send(&field[0], 1, 8);
+    send(&field[1], 2, 2);
+    assert!(record.poll(Duration::from_millis(2)).down(Action::LowerFilters));
+    let reads = field[0].borrow().reads;
+    let report = record.diagnostics();
     assert_eq!(report.connections, 2);
     assert_eq!(report.events, 8);
-    assert_eq!(r.snapshots().len(), 4);
-    assert_eq!(f[0].borrow().reads, reads);
-    f[0].borrow_mut().failed = true;
-    r.poll(Duration::from_millis(3));
-    assert_eq!(r.diagnostics().disconnects, 1);
-    assert_eq!(r.diagnostics().errors, 1);
+    assert_eq!(record.snapshots().len(), 4);
+    assert_eq!(field[0].borrow().reads, reads);
+    field[0].borrow_mut().failed = true;
+    record.poll(Duration::from_millis(3));
+    assert_eq!(record.diagnostics().disconnects, 1);
+    assert_eq!(record.diagnostics().errors, 1);
 }
 
 #[test]

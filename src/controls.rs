@@ -30,14 +30,14 @@ pub struct Conflict {
     pub count: usize,
 }
 impl fmt::Display for Conflict {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, field: &mut fmt::Formatter<'_>) -> fmt::Result {
         let noun = match (self.count % 100, self.count % 10) {
             (11..=14, _) => "профилей",
             (_, 1) => "профиль",
             (_, 2..=4) => "профиля",
             _ => "профилей",
         };
-        write!(f, "для {:04x}:{:04x} найдено {} {} ({}, {:?}); этот backend отключён",
+        write!(field, "для {:04x}:{:04x} найдено {} {} ({}, {:?}); этот backend отключён",
             self.vendor, self.product, self.count, noun, self.backend, self.name)
     }
 }
@@ -50,6 +50,7 @@ struct Header {
     identity: Identity,
 }
 
+/// Read bounded controller profiles; explicit files replace their backend and duplicate identities are reported.
 pub fn load(directory: &Path, hid: Option<&Path>, evdev: Option<&Path>) -> io::Result<Profiles> {
     // Explicit files replace their backend, not individual device identities.
     let mut profiles = Profiles {

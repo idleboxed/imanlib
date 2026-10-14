@@ -22,6 +22,7 @@ pub const ACTIONS: [Action; crate::input_metrics::LOGICAL_EDGE_COUNT] = [
 pub struct Buttons(u16);
 
 impl Buttons {
+    /// Set or clear one logical button in this snapshot.
     pub fn set(&mut self, action: Action, down: bool) {
         let bit = 1 << action as u8;
         if down {
@@ -31,18 +32,22 @@ impl Buttons {
         }
     }
 
+    /// Report whether a particular logical button is held.
     pub fn down(self, action: Action) -> bool {
         self.0 & (1 << action as u8) != 0
     }
 
+    /// Report whether at least one logical button is held.
     pub fn any(self) -> bool {
         self.0 != 0
     }
 
+    /// Return only buttons held in both snapshots.
     pub fn intersect(self, other: Self) -> Self {
         Self(self.0 & other.0)
     }
 
+    /// Return buttons held in either snapshot.
     pub fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }

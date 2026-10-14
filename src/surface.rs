@@ -16,6 +16,7 @@ pub struct Surface {
 }
 
 impl Surface {
+    /// Allocate a black surface; dimensions must be nonzero and at most 4096 pixels each.
     pub fn new(width: u32, height: u32) -> Self {
         assert!(width > 0 && height > 0 && width <= 4096 && height <= 4096);
         Self {
@@ -24,12 +25,15 @@ impl Surface {
             pixels: vec![0; width as usize * height as usize],
         }
     }
+    /// Borrow the packed RGB pixel buffer in row-major order.
     pub fn pixels(&self) -> &[u32] {
         &self.pixels
     }
+    /// Return the surface width in pixels.
     pub fn width(&self) -> u32 {
         self.width
     }
+    /// Return the surface height in pixels.
     pub fn height(&self) -> u32 {
         self.height
     }
@@ -38,27 +42,28 @@ impl Surface {
     pub fn blit(&mut self, source: &Surface, position: Point) {
         // Widen before adding dimensions: a completely offscreen i32 endpoint
         // must be a no-op, not overflow in Rectangle::bottom_right().
-        let x = i64::from(position.x);
-        let y = i64::from(position.y);
-        let left = x.max(0);
-        let top = y.max(0);
-        let right = (x + i64::from(source.width)).min(i64::from(self.width));
-        let bottom = (y + i64::from(source.height)).min(i64::from(self.height));
+        let position_x = i64::from(position.x);
+        let position_y = i64::from(position.y);
+        let left = position_x.max(0);
+        let top = position_y.max(0);
+        let right = (position_x + i64::from(source.width)).min(i64::from(self.width));
+        let bottom = (position_y + i64::from(source.height)).min(i64::from(self.height));
         if left >= right || top >= bottom {
             return;
         }
         let width = (right - left) as usize;
         for row in top..bottom {
-            let from = (row - y) as usize * source.width as usize + (left - x) as usize;
+            let from = (row - position_y) as usize * source.width as usize + (left - position_x) as usize;
             let to = row as usize * self.width as usize + left as usize;
             self.pixels[to..to + width].copy_from_slice(&source.pixels[from..from + width]);
         }
     }
 
+    /// Copy the surface into row-major RGB bytes for image encoding.
     pub fn rgb_bytes(&self) -> Vec<u8> {
         self.pixels
             .iter()
-            .flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8])
+            .flat_map(|pixel| [(pixel >> 16) as u8, (pixel >> 8) as u8, *pixel as u8])
             .collect()
     }
 }

@@ -258,9 +258,9 @@ fn evdev_profile_validation_rejects_typos_and_inconsistent_bindings() {
         ("axes", "left_stick_x", serde_json::json!(64)),
         ("match", "vendor", serde_json::json!("nope")),
     ] {
-        let mut d: serde_json::Value = serde_json::from_slice(&common::control_bytes(common::BOARD_EVDEV_FILE)).unwrap();
-        d[section][key] = value;
-        assert!(Profile::parse(&serde_json::to_vec(&d).unwrap()).is_err());
+        let mut directory_item: serde_json::Value = serde_json::from_slice(&common::control_bytes(common::BOARD_EVDEV_FILE)).unwrap();
+        directory_item[section][key] = value;
+        assert!(Profile::parse(&serde_json::to_vec(&directory_item).unwrap()).is_err());
     }
     let duplicate = String::from_utf8(common::control_bytes(common::BOARD_EVDEV_FILE))
         .unwrap()

@@ -62,6 +62,7 @@ pub struct Stream {
     taps: Vec<Key>,
 }
 impl Stream {
+    /// Return the currently held raw key codes for this stream.
     pub fn buttons_down(&self) -> Vec<u16> {
         self.down.iter().copied().collect()
     }
@@ -116,6 +117,7 @@ impl Probe {
         probe.records.clear();
         probe
     }
+    /// Register checked device metadata and return an available bounded stream slot.
     pub fn connect(&mut self, info: DeviceInfo, ms: u64) -> Result<usize, &'static str> {
         info.validate()?;
         if self.connections >= MAX_CONNECTIONS {
@@ -125,7 +127,7 @@ impl Probe {
             .streams
             .iter()
             .flatten()
-            .any(|s| s.info.path == info.path)
+            .any(|stream| stream.info.path == info.path)
         {
             return Err("duplicate diagnostic device path");
         }
@@ -157,9 +159,9 @@ impl Probe {
         Ok(slot)
     }
     fn evidence(&mut self, slot: usize, ms: u64) {
-        if let Some(s) = &mut self.streams[slot] {
-            if s.evidence.events != 0 || s.evidence.invalid_events != 0 {
-                self.records.push(json!({"event":"evidence","stage":self.stage,"end_ms":ms,"generation":s.generation,"data":std::mem::take(&mut s.evidence)}));
+        if let Some(stream) = &mut self.streams[slot] {
+            if stream.evidence.events != 0 || stream.evidence.invalid_events != 0 {
+                self.records.push(json!({"event":"evidence","stage":self.stage,"end_ms":ms,"generation":stream.generation,"data":std::mem::take(&mut stream.evidence)}));
             }
         }
     }
@@ -170,8 +172,8 @@ impl Probe {
         for slot in 0..MAX_STREAMS {
             self.evidence(slot, ms);
         }
-        for s in self.streams.iter_mut().flatten() {
-            s.clear_actions();
+        for stream in self.streams.iter_mut().flatten() {
+            stream.clear_actions();
         }
         self.stage = stage;
         if stage == Stage::Finish {
@@ -180,99 +182,103 @@ impl Probe {
         self.records
             .push(json!({"event":"stage","ms":ms,"stage":stage}));
     }
+    /// Record the stream's evidence and invalidate ownership when its device disappears.
     pub fn disconnect(&mut self, slot: usize, ms: u64, reason: &str) {
         self.evidence(slot, ms);
-        if let Some(s) = self.streams[slot].take() {
+        if let Some(stream) = self.streams[slot].take() {
             self.diagnostics.disconnects += 1;
-            self.records.push(json!({"event":"disconnect","ms":ms,"generation":s.generation,"reason":reason.chars().take(160).collect::<String>(),"events":s.events}));
+            self.records.push(json!({"event":"disconnect","ms":ms,"generation":stream.generation,"reason":reason.chars().take(160).collect::<String>(),"events":stream.events}));
             if self.stage == Stage::Finish {
                 return;
             }
-            if self.guide.disconnected(s.generation) {
+            if self.guide.disconnected(stream.generation) {
                 self.transition(Stage::Prepare, ms);
             } else if let Stage::Button { player, .. } = self.stage {
-                if self.guide.players[usize::from(player - 1)] == Some(s.generation) {
+                if self.guide.players[usize::from(player - 1)] == Some(stream.generation) {
                     self.guide.players[usize::from(player - 1)] = None;
                     self.transition(Stage::Player { player }, ms);
                 }
             }
         }
     }
+    /// Discard stale control state and record why the stream must establish a new baseline.
     pub fn resync(&mut self, slot: usize, ms: u64, reason: &str) {
         if reason == "SYN_DROPPED" {
             self.diagnostics.syn_dropped += 1;
         }
-        if let Some(s) = &mut self.streams[slot] {
-            if s.ready {
-                s.resyncs += 1;
+        if let Some(stream) = &mut self.streams[slot] {
+            if stream.ready {
+                stream.resyncs += 1;
                 self.records.push(
-                    json!({"event":"resync","ms":ms,"generation":s.generation,"reason":reason}),
+                    json!({"event":"resync","ms":ms,"generation":stream.generation,"reason":reason}),
                 );
             }
-            s.ready = false;
-            s.down.clear();
-            s.clear_actions();
+            stream.ready = false;
+            stream.down.clear();
+            stream.clear_actions();
         }
         self.guide.clear_candidate();
     }
+    /// Validate held keys and establish the stream's starting state without inventing pressed edges.
     pub fn baseline(&mut self, slot: usize, keys: &[u16], ms: u64) -> Result<(), &'static str> {
-        let s = self.streams[slot].as_mut().ok_or("missing stream")?;
-        if keys.len() > 768 || keys.iter().any(|k| !s.info.key_codes.contains(k)) {
+        let stream = self.streams[slot].as_mut().ok_or("missing stream")?;
+        if keys.len() > 768 || keys.iter().any(|key_item| !stream.info.key_codes.contains(key_item)) {
             return Err("invalid evdev key state");
         }
-        s.down = keys.iter().copied().collect();
-        s.clear_actions();
-        s.ready = true;
-        self.records.push(json!({"event":"key_state","ms":ms,"generation":s.generation,"keys_down":keys,"not_a_press":true}));
+        stream.down = keys.iter().copied().collect();
+        stream.clear_actions();
+        stream.ready = true;
+        self.records.push(json!({"event":"key_state","ms":ms,"generation":stream.generation,"keys_down":keys,"not_a_press":true}));
         Ok(())
     }
+    /// Apply one supported event to a ready stream and accumulate bounded evidence.
     pub fn event(&mut self, slot: usize, event: Event, ms: u64) {
-        let Some(s) = self.streams[slot].as_mut() else {
+        let Some(stream) = self.streams[slot].as_mut() else {
             return;
         };
-        if !s.ready || !matches!(event.kind, 1 | 3) {
+        if !stream.ready || !matches!(event.kind, 1 | 3) {
             return;
         }
         self.diagnostics.event(event.kind, event.code, event.value);
         if (event.kind == 1
-            && (!s.info.key_codes.contains(&event.code) || !matches!(event.value, 0..=2)))
+            && (!stream.info.key_codes.contains(&event.code) || !matches!(event.value, 0..=2)))
             || (event.kind == 3
-                && (event.code >= 64 || !s.info.axis_codes.contains(&(event.code as u8))))
+                && (event.code >= 64 || !stream.info.axis_codes.contains(&(event.code as u8))))
         {
             self.diagnostics.errors += 1;
-            s.evidence.invalid_events += 1;
+            stream.evidence.invalid_events += 1;
             self.resync(slot, ms, "invalid event");
             return;
         }
-        s.last = Some(event);
+        stream.last = Some(event);
         if self.capture_recent {
             if self.recent.len() == 6 {
                 self.recent.pop_front();
             }
             self.recent.push_back(RawObservation {
-                generation: s.generation, event, ms,
+                generation: stream.generation, event, ms,
                 retroarch_button: (event.kind == 1)
-                    .then(|| find_retroarch_button_index(&s.info.key_codes, event.code)).flatten(),
+                    .then(|| find_retroarch_button_index(&stream.info.key_codes, event.code)).flatten(),
             });
-            self.records.push(json!({"event":"raw","ms":ms,"generation":s.generation,
+            self.records.push(json!({"event":"raw","ms":ms,"generation":stream.generation,
                 "kind":event.kind,"code":event.code,"value":event.value,
-                "fresh_press":event.kind == 1 && event.value == 1 && !s.down.contains(&event.code),
+                "fresh_press":event.kind == 1 && event.value == 1 && !stream.down.contains(&event.code),
                 "retroarch_button":self.recent.back().and_then(|sample| sample.retroarch_button),
-                "operator":event.kind == 1 && self.guide.operator == Some(Key {generation:s.generation,code:event.code})}));
+                "operator":event.kind == 1 && self.guide.operator == Some(Key {generation:stream.generation,code:event.code})}));
         }
-        s.events += 1;
-        s.evidence.events += 1;
+        stream.events += 1;
+        stream.evidence.events += 1;
         if event.kind == 1 {
             match event.value {
-                1 if s.down.insert(event.code) => {
-                    s.presses.insert(event.code, ms);
+                1 if stream.down.insert(event.code) => {
+                    stream.presses.insert(event.code, ms);
                 }
                 0 => {
-                    s.down.remove(&event.code);
-                    if s.presses.remove(&event.code).is_some() {
-                        if s.taps.len() < 16 {
-                            s.taps.push(Key {
-                                generation: s.generation,
+                    stream.down.remove(&event.code);
+                    if stream.presses.remove(&event.code).is_some() {
+                        if stream.taps.len() < 16 {
+                            stream.taps.push(Key {
+                                generation: stream.generation,
                                 code: event.code,
                             });
                         } else {
@@ -285,11 +291,11 @@ impl Probe {
             }
         }
         let key = u32::from(event.kind) * 65536 + u32::from(event.code);
-        if !s.evidence.controls.contains_key(&key) && s.evidence.controls.len() == 32 {
-            s.evidence.controls_omitted += 1;
+        if !stream.evidence.controls.contains_key(&key) && stream.evidence.controls.len() == 32 {
+            stream.evidence.controls_omitted += 1;
             return;
         }
-        let c = s.evidence.controls.entry(key).or_insert(ControlStats {
+        let control_stats = stream.evidence.controls.entry(key).or_insert(ControlStats {
             kind: event.kind,
             code: event.code,
             count: 0,
@@ -300,23 +306,26 @@ impl Probe {
             first_ms: ms,
             last_ms: ms,
         });
-        c.count += 1;
-        c.min = c.min.min(event.value);
-        c.max = c.max.max(event.value);
-        c.last = event.value;
-        c.last_ms = ms;
+        control_stats.count += 1;
+        control_stats.min = control_stats.min.min(event.value);
+        control_stats.max = control_stats.max.max(event.value);
+        control_stats.last = event.value;
+        control_stats.last_ms = ms;
     }
+    /// Report whether the selected stream has a usable baseline.
     pub fn ready(&self, slot: usize) -> bool {
-        self.streams[slot].as_ref().is_some_and(|s| s.ready)
+        self.streams[slot].as_ref().is_some_and(|stream| stream.ready)
     }
+    /// Record an exhausted read budget and require the stream to resynchronize.
     pub fn incomplete(&mut self, slot: usize, ms: u64) {
         self.incomplete_polls += 1;
         self.resync(slot, ms, "read budget exceeded");
     }
+    /// Discard incomplete sample actions before the next observation.
     pub fn cancel_sample(&mut self) {
         self.sample_complete = false;
-        for s in self.streams.iter_mut().flatten() {
-            s.clear_actions();
+        for stream in self.streams.iter_mut().flatten() {
+            stream.clear_actions();
         }
         self.guide.clear_candidate();
     }
@@ -324,18 +333,18 @@ impl Probe {
     pub fn sampled(&mut self, ms: u64) {
         self.sample_complete = true;
         let mut taps = Vec::new();
-        for s in self.streams.iter_mut().flatten() {
-            taps.append(&mut s.taps);
+        for stream in self.streams.iter_mut().flatten() {
+            taps.append(&mut stream.taps);
         }
         if self.capture_recent {
             return;
         }
         if self.stage != Stage::Finish
-            && self.guide.operator.is_some_and(|k| {
-                self.streams.iter().flatten().any(|s| {
-                    s.generation == k.generation
-                        && s.presses
-                            .get(&k.code)
+            && self.guide.operator.is_some_and(|key_item| {
+                self.streams.iter().flatten().any(|stream| {
+                    stream.generation == key_item.generation
+                        && stream.presses
+                            .get(&key_item.code)
                             .is_some_and(|&start| ms.saturating_sub(start) >= 2000)
                 })
             })
@@ -350,16 +359,16 @@ impl Probe {
                 .streams
                 .iter()
                 .flatten()
-                .filter(|s| {
-                    s.presses.keys().any(|&code| {
+                .filter(|stream| {
+                    stream.presses.keys().any(|&code| {
                         self.guide.operator
                             != Some(Key {
-                                generation: s.generation,
+                                generation: stream.generation,
                                 code,
                             })
                     })
                 })
-                .map(|s| s.generation)
+                .map(|stream| stream.generation)
                 .collect();
             if held.len() > self.max_overlap {
                 self.max_overlap = held.len();
@@ -373,13 +382,16 @@ impl Probe {
         self.records.extend(records);
         self.transition(next, ms);
     }
+    /// Report whether the probe's final display interval has elapsed.
     pub fn done(&self, ms: u64) -> bool {
         self.finished_at
             .is_some_and(|start| ms.saturating_sub(start) >= 2000)
     }
+    /// Drain accumulated probe records for the caller to persist or display.
     pub fn take_records(&mut self) -> Vec<Value> {
         std::mem::take(&mut self.records)
     }
+    /// Copy bounded input counters and stream state into the shared report format.
     pub fn diagnostic_report(&self, headless: bool) -> crate::input_metrics::Sample {
         crate::input_metrics::Sample {
             evdev: self.diagnostics.clone(),
@@ -393,6 +405,7 @@ impl Probe {
             ..Default::default()
         }
     }
+    /// Record final stream evidence and return a summary without claiming physical-player verification.
     pub fn finish(&mut self, ms: u64, reason: &str) -> Value {
         for slot in 0..MAX_STREAMS {
             self.evidence(slot, ms);
@@ -408,6 +421,7 @@ pub struct LogBudget {
     pub omitted: usize,
 }
 impl LogBudget {
+    /// Encode a probe log record while enforcing the total output-byte budget.
     pub fn encode(&mut self, record: &Value) -> Option<String> {
         let line = format!("IGUI input: {record}\n");
         if self.bytes + line.len() > LOG_BYTES {

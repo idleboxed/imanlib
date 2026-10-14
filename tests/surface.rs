@@ -88,16 +88,16 @@ fn packed_blit_clips_every_edge_and_leaves_other_pixels_untouched() {
         let mut dest = Surface::new(4, 3);
         dest.clear(Rgb888::MAGENTA).unwrap();
         dest.blit(&source, position);
-        for y in 0..3i32 {
-            for x in 0..4i32 {
-                let sx = i64::from(x) - i64::from(position.x);
-                let sy = i64::from(y) - i64::from(position.y);
+        for position_y in 0..3i32 {
+            for position_x in 0..4i32 {
+                let sx = i64::from(position_x) - i64::from(position.x);
+                let sy = i64::from(position_y) - i64::from(position.y);
                 let expected = if (0..3).contains(&sx) && (0..2).contains(&sy) {
                     source.pixels()[sy as usize * 3 + sx as usize]
                 } else {
                     0xff00ff
                 };
-                assert_eq!(dest.pixels()[y as usize * 4 + x as usize], expected);
+                assert_eq!(dest.pixels()[position_y as usize * 4 + position_x as usize], expected);
             }
         }
     }

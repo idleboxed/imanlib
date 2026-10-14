@@ -22,6 +22,7 @@ pub struct Reader<S: Source> {
     errors: BTreeSet<String>,
 }
 impl<S: Source> Reader<S> {
+    /// Create a bounded probe reader with its source; devices are acquired by polling.
     pub fn new(source: S) -> Self {
         Self {
             source,
@@ -35,11 +36,12 @@ impl<S: Source> Reader<S> {
             probe.records.push(json!({"event":"device_error","ms":ms,"message":message.chars().take(200).collect::<String>()}));
         }
     }
+    /// Discover and drain permitted streams within read budgets, updating the supplied probe model.
     pub fn poll(&mut self, probe: &mut Probe, ms: u64) {
         if ms >= self.next_scan && probe.connections < MAX_CONNECTIONS {
             self.next_scan = ms.saturating_add(2000);
             match self.source.discover() {
-                Err(e) => self.error(probe, ms, format!("discovery: {e}")),
+                Err(error_item) => self.error(probe, ms, format!("discovery: {error_item}")),
                 Ok(paths) => {
                     if paths.len() > MAX_STREAMS {
                         self.error(
@@ -54,7 +56,7 @@ impl<S: Source> Reader<S> {
                             .streams
                             .iter()
                             .flatten()
-                            .any(|s| s.info.path == path.to_string_lossy())
+                            .any(|stream| stream.info.path == path.to_string_lossy())
                         {
                             continue;
                         }
@@ -70,9 +72,9 @@ impl<S: Source> Reader<S> {
                                         packet_complete: true,
                                     })
                                 }
-                                Err(e) => self.error(probe, ms, e.into()),
+                                Err(error_item) => self.error(probe, ms, error_item.into()),
                             },
-                            Err(e) => self.error(probe, ms, format!("{}: {e}", path.display())),
+                            Err(error_item) => self.error(probe, ms, format!("{}: {error_item}", path.display())),
                         }
                     }
                 }
@@ -87,12 +89,12 @@ impl<S: Source> Reader<S> {
             let mut failed = None;
             for _ in 0..256 {
                 match active.pad.read() {
-                    Ok(Some(e)) => {
-                        if e.kind == 0 && e.code == 3 {
+                    Ok(Some(error_item)) => {
+                        if error_item.kind == 0 && error_item.code == 3 {
                             active.dropped = true;
                             active.packet_complete = false;
                             probe.resync(slot, ms, "SYN_DROPPED");
-                        } else if e.kind == 0 && e.code == 0 {
+                        } else if error_item.kind == 0 && error_item.code == 0 {
                             active.packet_complete = true;
                             if active.dropped {
                                 active.dropped = false;
@@ -100,8 +102,8 @@ impl<S: Source> Reader<S> {
                                     probe.baseline(slot, &keys, ms).map_err(io::Error::other)
                                 }) {
                                     Ok(()) => {}
-                                    Err(e) => {
-                                        failed = Some(e.to_string());
+                                    Err(error_item) => {
+                                        failed = Some(error_item.to_string());
                                         break;
                                     }
                                 }
@@ -109,7 +111,7 @@ impl<S: Source> Reader<S> {
                         } else {
                             active.packet_complete = false;
                             if !active.dropped {
-                                probe.event(slot, e, ms);
+                                probe.event(slot, error_item, ms);
                             }
                         }
                     }
@@ -118,17 +120,17 @@ impl<S: Source> Reader<S> {
                         if active.dropped || !active.packet_complete {
                             all_drained = false;
                         } else if !probe.ready(slot) {
-                            if let Err(e) = active.pad.keys_down().and_then(|keys| {
+                            if let Err(error_item) = active.pad.keys_down().and_then(|keys| {
                                 probe.baseline(slot, &keys, ms).map_err(io::Error::other)
                             }) {
-                                failed = Some(e.to_string());
+                                failed = Some(error_item.to_string());
                             }
                         }
                         break;
                     }
-                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(e) => {
-                        failed = Some(e.to_string());
+                    Err(error_item) if error_item.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(error_item) => {
+                        failed = Some(error_item.to_string());
                         break;
                     }
                 }
@@ -155,8 +157,8 @@ impl<S: Source> Reader<S> {
 pub fn usb_inventory(root: &Path) -> io::Result<Value> {
     let mut nodes = Vec::new();
     let mut truncated = false;
-    for (i, entry) in fs::read_dir(root)?.enumerate() {
-        if i >= 256 {
+    for (index, entry) in fs::read_dir(root)?.enumerate() {
+        if index >= 256 {
             truncated = true;
             break;
         }
@@ -167,7 +169,7 @@ pub fn usb_inventory(root: &Path) -> io::Result<Value> {
         }
         nodes.push((name, entry.path()));
     }
-    nodes.sort_by(|a, b| a.0.cmp(&b.0));
+    nodes.sort_by(|first_device, second_device| first_device.0.cmp(&second_device.0));
     if nodes.len() > 16 {
         truncated = true;
         nodes.truncate(16);

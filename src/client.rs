@@ -24,6 +24,7 @@ pub struct Client {
     last_request: u64,
 }
 impl Client {
+    /// Connect without blocking, rejecting empty, NUL-containing or oversized Unix socket paths.
     pub fn connect(path: &Path) -> io::Result<Self> {
         let bytes = path.as_os_str().as_bytes();
         let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
@@ -66,6 +67,7 @@ impl Client {
             last_request: 0,
         })
     }
+    /// Queue a validated request and return its connection-local ID; this is not an action acknowledgement.
     pub fn send(&mut self, command: &str, params: Value) -> io::Result<u64> {
         let request = Request::new(self.next, command, params);
         if !request.valid() {
@@ -79,19 +81,20 @@ impl Client {
             .queue(&Message::Request(request), REQUEST_LIMIT)?;
         Ok(self.next - 1)
     }
+    /// Flush outgoing data and read a response, retaining service requests and close events for later handling.
     pub fn poll(&mut self) -> io::Result<Option<Response>> {
         self.channel.flush()?;
         match self.channel.receive_frame::<Message>()? {
             None => Ok(None),
-            Some((Message::Response(r), _)) => Ok(Some(r)),
-            Some((Message::Request(r), size))
-                if r.valid()
-                    && r.id > self.last_request
+            Some((Message::Response(response_item), _)) => Ok(Some(response_item)),
+            Some((Message::Request(request), size))
+                if request.valid()
+                    && request.id > self.last_request
                     && self.requests.len() < 4
                     && size <= REQUEST_LIMIT =>
             {
-                self.last_request = r.id;
-                self.requests.push_back(r);
+                self.last_request = request.id;
+                self.requests.push_back(request);
                 Ok(None)
             }
             Some((Message::Event { event, params }, _))
@@ -103,13 +106,16 @@ impl Client {
             _ => Err(io::Error::other("unexpected IPC message")),
         }
     }
+    /// Take the next request forwarded to this service, if one has arrived.
     pub fn take_request(&mut self) -> Option<Request> {
         self.requests.pop_front()
     }
+    /// Queue the actual outcome of a service request for delivery to its caller.
     pub fn reply(&mut self, response: Response) -> io::Result<()> {
         self.channel
             .queue(&Message::Response(response), RESPONSE_LIMIT)
     }
+    /// Consume one pending close event, returning whether it was present.
     pub fn close_requested(&mut self) -> bool {
         self.events.pop_front().is_some()
     }
@@ -133,6 +139,7 @@ impl Client {
             thread::sleep(Duration::from_millis(2));
         }
     }
+    /// Make a bounded blocking call and return only a completed result, rejecting errors and accepted operations.
     pub fn value(&mut self, command: &str, params: Value) -> io::Result<Value> {
         match self.call(command, params)?.outcome {
             Outcome::Done { result } => Ok(result),

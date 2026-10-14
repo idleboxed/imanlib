@@ -19,6 +19,7 @@ pub struct MemoryInfo {
 }
 
 impl MemoryInfo {
+    /// Read available and total memory from bounded meminfo text, or return None for invalid data.
     pub fn parse(meminfo: &str) -> Option<Self> {
         if meminfo.len() > MEMINFO_LIMIT {
             return None;
@@ -57,14 +58,14 @@ pub fn parse_stat(text: &str) -> io::Result<Task> {
     if id == 0 {
         return Err(bad());
     }
-    let number = |i: usize| fields[i].parse::<u64>().map_err(|_| bad());
+    let number = |index_item: usize| fields[index_item].parse::<u64>().map_err(|_| bad());
     Ok(Task {
         id,
         start_ticks: number(19)?,
         name: name
             .chars()
             .take(16)
-            .map(|c| if c.is_control() { '?' } else { c })
+            .map(|character| if character.is_control() { '?' } else { character })
             .collect(),
         cpu_ticks: number(11)?.checked_add(number(12)?).ok_or_else(bad)?,
     })
@@ -75,7 +76,7 @@ pub fn read_text(path: &Path, limit: usize) -> io::Result<String> {
     let mut text = String::new();
     let bound = u64::try_from(limit)
         .ok()
-        .and_then(|n| n.checked_add(1))
+        .and_then(|count| count.checked_add(1))
         .ok_or_else(|| io::Error::other("invalid metric input limit"))?;
     File::open(path)?.take(bound).read_to_string(&mut text)?;
     if text.len() > limit {
@@ -84,6 +85,7 @@ pub fn read_text(path: &Path, limit: usize) -> io::Result<String> {
     Ok(text)
 }
 
+/// Read bounded meminfo from the supplied path and validate its memory values.
 pub fn read_memory(path: &Path) -> io::Result<MemoryInfo> {
     MemoryInfo::parse(&read_text(path, MEMINFO_LIMIT)?)
         .ok_or_else(|| io::Error::other("invalid meminfo"))
@@ -98,8 +100,8 @@ pub fn parse_kib_fields<const N: usize>(text: &str, names: [&str; N]) -> io::Res
         let Some((key, value)) = line.split_once(':') else { continue; };
         let Some(index) = names.iter().position(|name| *name == key) else { continue; };
         let mut fields = value.split_whitespace();
-        let bytes = fields.next().and_then(|s| s.parse::<u64>().ok())
-            .and_then(|n| n.checked_mul(1024)).ok_or_else(bad)?;
+        let bytes = fields.next().and_then(|text_item| text_item.parse::<u64>().ok())
+            .and_then(|count| count.checked_mul(1024)).ok_or_else(bad)?;
         if fields.next() != Some("kB") || fields.next().is_some() || values[index].replace(bytes).is_some() {
             return Err(bad());
         }
@@ -118,7 +120,7 @@ impl<T> From<io::Result<T>> for Reading<T> {
         match result {
             Ok(value) => Self { value: Some(value), error: None },
             Err(error) => Self { value: None, error: Some(error.to_string().chars().take(120)
-                .map(|c| if c.is_control() { '?' } else { c }).collect()) },
+                .map(|character| if character.is_control() { '?' } else { character }).collect()) },
         }
     }
 }

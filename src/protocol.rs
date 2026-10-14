@@ -13,6 +13,7 @@ pub struct Request {
 }
 
 impl Request {
+    /// Construct a request; validity is checked before transport accepts it.
     pub fn new(id: u64, command: &str, params: Value) -> Self {
         Self {
             id,
@@ -20,10 +21,11 @@ impl Request {
             params,
         }
     }
+    /// Report whether this request has a positive ID, namespaced command and object parameters.
     pub fn valid(&self) -> bool {
         let mut parts = self.command.split('.');
-        let valid = |p: &str| {
-            !p.is_empty() && p.len() <= 48 && p.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+        let valid = |part: &str| {
+            !part.is_empty() && part.len() <= 48 && part.bytes().all(|byte| byte.is_ascii_lowercase() || byte == b'_')
         };
         self.id != 0
             && parts.next().is_some_and(valid)
@@ -39,6 +41,7 @@ pub struct RpcError {
     pub message: String,
 }
 impl RpcError {
+    /// Construct a bounded error description from its code and message.
     pub fn new(code: &str, message: impl ToString) -> Self {
         Self {
             code: code.into(),
@@ -47,8 +50,8 @@ impl RpcError {
     }
 }
 impl std::fmt::Display for RpcError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.code, self.message)
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.code, self.message)
     }
 }
 impl std::error::Error for RpcError {}
@@ -67,12 +70,14 @@ pub struct Response {
     pub outcome: Outcome,
 }
 impl Response {
+    /// Construct the completed outcome for the given request ID.
     pub fn done(id: u64, result: Value) -> Self {
         Self {
             id,
             outcome: Outcome::Done { result },
         }
     }
+    /// Construct a bounded error outcome for the given request ID.
     pub fn error(id: u64, code: &str, message: impl ToString) -> Self {
         Self {
             id,

@@ -52,9 +52,11 @@ pub(crate) enum AxisBinding {
     Directed { code: u8, #[serde(default)] invert: bool },
 }
 impl AxisBinding {
+    /// Return the evdev axis code in either supported binding form.
     pub(crate) fn code(self) -> u8 {
         match self { Self::Code(code) | Self::Directed { code, .. } => code }
     }
+    /// Return whether this axis binding reverses its direction.
     pub(crate) fn invert(self) -> bool {
         matches!(self, Self::Directed { invert: true, .. })
     }
@@ -80,12 +82,13 @@ pub struct Profile {
     axes: Axes,
 }
 impl Profile {
+    /// Decode and validate a bounded evdev JSON profile.
     pub fn parse(bytes: &[u8]) -> io::Result<Self> {
         if bytes.len() > MAX_BYTES {
             return Err(invalid("input profile exceeds 32 KiB"));
         }
         let profile: Self = serde_json::from_slice(bytes)
-            .map_err(|e| invalid(format!("invalid evdev profile: {e}")))?;
+            .map_err(|error_item| invalid(format!("invalid evdev profile: {error_item}")))?;
         profile.identity.validate(&profile.name)?;
         if profile.backend != "evdev" || profile.access != "read-only" {
             return Err(invalid("unsupported evdev profile backend/access"));
@@ -100,13 +103,13 @@ impl Profile {
         }
         let directions = [Button::Up, Button::Down, Button::Left, Button::Right]
             .iter()
-            .filter(|k| profile.buttons.contains_key(k))
+            .filter(|key_item| profile.buttons.contains_key(key_item))
             .count();
         if directions != 0 && directions != 4 {
             return Err(invalid("incomplete evdev dpad keys"));
         }
         let axes: Vec<_> = profile.axis_bindings().into_iter().flatten().map(AxisBinding::code).collect();
-        if axes.iter().any(|v| *v >= 64) || axes.iter().collect::<BTreeSet<_>>().len() != axes.len() {
+        if axes.iter().any(|value| *value >= 64) || axes.iter().collect::<BTreeSet<_>>().len() != axes.len() {
             return Err(invalid("invalid/duplicate evdev axes"));
         }
         if profile.axes.left_stick_x.is_some() != profile.axes.left_stick_y.is_some()
@@ -118,18 +121,21 @@ impl Profile {
         }
         Ok(profile)
     }
+    /// Read and validate an evdev profile from a bounded regular file.
     pub fn load(path: &Path) -> io::Result<Self> {
         controller_profile::read(path).and_then(|bytes| Self::parse(&bytes))
             .map_err(|error| io::Error::new(error.kind(), format!("input profile {}: {error}", path.display())))
     }
+    /// Report whether bus, USB IDs and exact Linux device name match the profile.
     pub fn matches(&self, bus: u32, vendor: u16, product: u16, name: &str) -> bool {
         self.identity.matches(bus, vendor, product) && self.name == name
     }
+    /// Match the device metadata against this profile without opening the device.
     pub(crate) fn matches_info(&self, info: &DeviceInfo) -> bool {
         let id = |key: &str| {
             info.identity
                 .get(key)
-                .and_then(|v| u16::from_str_radix(v, 16).ok())
+                .and_then(|value| u16::from_str_radix(value, 16).ok())
         };
         match (id("id/bustype"), id("id/vendor"), id("id/product")) {
             (Some(bus), Some(vendor), Some(product)) => {
@@ -138,12 +144,14 @@ impl Profile {
             _ => false,
         }
     }
+    /// Translate profile button codes to logical menu actions.
     pub(crate) fn key_map(&self) -> BTreeMap<u16, Action> {
         self.buttons
             .iter()
-            .map(|(b, code)| (*code, b.action()))
+            .map(|(button, code)| (*code, button.action()))
             .collect()
     }
+    /// Return axis codes and inversion settings used by the receiver.
     pub(crate) fn axis_bindings(&self) -> [Option<AxisBinding>; 4] {
         [
             self.axes.left_stick_x,

@@ -23,6 +23,7 @@ use std::{
 
 const CONTROLLER_LIMIT: usize = 8;
 
+/// Report whether evdev metadata refers to the same physical generation as a HID path.
 pub(crate) fn belongs_to_hid_generation(info: &DeviceInfo, generation: &Path) -> bool {
     let Some(sysfs) = info.identity.get("sysfs") else { return false; };
     let sysfs = Path::new(sysfs);
@@ -44,7 +45,7 @@ struct Controls {
 impl Controls {
     fn new(info: &DeviceInfo, profiles: &[Profile]) -> io::Result<Self> {
         info.validate().map_err(io::Error::other)?;
-        let mut matching = profiles.iter().filter(|p| p.matches_info(info));
+        let mut matching = profiles.iter().filter(|profile_item| profile_item.matches_info(info));
         let profile = matching.next()
             .ok_or_else(|| io::Error::other("unsupported receiver identity"))?;
         if matching.next().is_some() {
@@ -247,8 +248,8 @@ impl Controller {
         for _ in 0..256 {
             match self.pad.read() {
                 Ok(Some(event)) => {
-                    if let Some(d) = diagnostics.as_deref_mut() {
-                        d.event(event.kind, event.code, event.value);
+                    if let Some(diagnostics_item) = diagnostics.as_deref_mut() {
+                        diagnostics_item.event(event.kind, event.code, event.value);
                     }
                     if event.kind == 0 && event.code == 3 {
                         // SYN_DROPPED
@@ -296,22 +297,22 @@ impl Controller {
                         return Ok(Buttons::default());
                     }
                     let mut sample = self.current.union(self.pressed);
-                    for (a, b) in [(Action::Left, Action::Right), (Action::Up, Action::Down)] {
-                        if sample.down(a) && sample.down(b) {
+                    for (axis_item, opposite_action) in [(Action::Left, Action::Right), (Action::Up, Action::Down)] {
+                        if sample.down(axis_item) && sample.down(opposite_action) {
                             // Coalesced taps must not reintroduce opposing directions.
-                            sample.set(a, self.current.down(a));
-                            sample.set(b, self.current.down(b));
+                            sample.set(axis_item, self.current.down(axis_item));
+                            sample.set(opposite_action, self.current.down(opposite_action));
                         }
                     }
                     self.pressed = Buttons::default();
                     return Ok(sample);
                 }
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                Err(e) => return Err(e),
+                Err(error_item) if error_item.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error_item) => return Err(error_item),
             }
         }
-        if let Some(d) = diagnostics {
-            d.poll_limits += 1;
+        if let Some(diagnostics_item) = diagnostics {
+            diagnostics_item.poll_limits += 1;
         }
         self.inhibit();
         Ok(Buttons::default())
@@ -333,6 +334,7 @@ pub struct Receiver<S: Source> {
     diagnostics: Option<Counters>,
 }
 impl<S: Source> Receiver<S> {
+    /// Create a receiver with its source and profiles; device acquisition happens during polling.
     pub fn with_profiles(source: S, profiles: Vec<Profile>) -> Self {
         Self {
             source,
@@ -345,12 +347,15 @@ impl<S: Source> Receiver<S> {
             diagnostics: None,
         }
     }
+    /// Start collecting bounded receiver counters.
     pub fn enable_diagnostics(&mut self) {
         self.diagnostics = Some(Counters::default());
     }
+    /// Copy receiver counters, returning empty counters when diagnostics are disabled.
     pub fn diagnostics(&self) -> Counters {
         self.diagnostics.clone().unwrap_or_default()
     }
+    /// Return bounded diagnostic identity for the current evdev input owner.
     pub fn diagnostic_identity(&self) -> Option<crate::input_metrics::Identity> {
         let info = self.owner_info()?;
         Some(crate::input_metrics::Identity {
@@ -359,21 +364,21 @@ impl<S: Source> Receiver<S> {
             vendor: info
                 .identity
                 .get("id/vendor")
-                .filter(|s| s.len() <= 64)
+                .filter(|text| text.len() <= 64)
                 .cloned(),
             product: info
                 .identity
                 .get("id/product")
-                .filter(|s| s.len() <= 64)
+                .filter(|text| text.len() <= 64)
                 .cloned(),
             axes: info
                 .abs_info
                 .iter()
                 .take(8)
-                .map(|(&code, a)| crate::input_metrics::AxisRange {
+                .map(|(&code, axis_item)| crate::input_metrics::AxisRange {
                     code,
-                    min: a[1],
-                    max: a[2],
+                    min: axis_item[1],
+                    max: axis_item[2],
                 })
                 .collect(),
             axes_omitted: info.abs_info.len().saturating_sub(8),
@@ -384,28 +389,33 @@ impl<S: Source> Receiver<S> {
     pub fn connected(&self) -> bool {
         !self.controllers.is_empty()
     }
+    /// Return metadata for the controller currently owning menu input.
     pub(crate) fn owner_info(&self) -> Option<&DeviceInfo> {
         Some(self.controllers.get(self.owner.as_ref()?)?.pad.info())
     }
+    /// Report whether the latest poll observed a new request for input ownership.
     pub(crate) fn fresh_request(&self) -> bool {
         self.fresh_request
     }
+    /// Suppress the current owner's held input until a new neutral baseline is observed.
     pub(crate) fn inhibit_owner(&mut self) {
         if let Some(controller) = self.owner.as_ref().and_then(|path| self.controllers.get_mut(path)) {
             controller.inhibit();
         }
     }
     fn error(&mut self, message: String) {
-        if let Some(d) = &mut self.diagnostics {
-            d.errors += 1;
+        if let Some(diagnostics_item) = &mut self.diagnostics {
+            diagnostics_item.errors += 1;
         }
         if self.errors.len() < 32 && self.errors.insert(message.clone()) {
             eprintln!("IGUI receiver: {message}");
         }
     }
+    /// Discover and poll permitted devices, returning buttons from a single input owner.
     pub fn poll(&mut self, now: Duration) -> Buttons {
         self.poll_with_exclusions(now, &[])
     }
+    /// Poll evdev while blocking device aliases of the supplied HID generations.
     pub(crate) fn poll_with_exclusions(&mut self, now: Duration, hid_generations: &[PathBuf]) -> Buttons {
         self.fresh_request = false;
         self.controllers.retain(|_, controller| {
@@ -417,7 +427,7 @@ impl<S: Source> Receiver<S> {
         if now >= self.next_scan {
             self.next_scan = now.saturating_add(Duration::from_secs(2));
             match self.source.discover() {
-                Err(e) => self.error(format!("discovery: {e}")),
+                Err(error_item) => self.error(format!("discovery: {error_item}")),
                 Ok(mut paths) => {
                     paths.sort();
                     paths.dedup();
@@ -439,8 +449,8 @@ impl<S: Source> Receiver<S> {
                             })
                         {
                             Ok(Some(controller)) => {
-                                if let Some(d) = &mut self.diagnostics {
-                                    d.connections += 1;
+                                if let Some(diagnostics_item) = &mut self.diagnostics {
+                                    diagnostics_item.connections += 1;
                                 }
                                 eprintln!(
                                     "IGUI receiver: {} ({:?}:{:?}, awaiting fresh key press)",
@@ -451,7 +461,7 @@ impl<S: Source> Receiver<S> {
                                 self.controllers.insert(path, controller);
                             }
                             Ok(None) => {}
-                            Err(e) => self.error(format!("{}: {e}", path.display())),
+                            Err(error_item) => self.error(format!("{}: {error_item}", path.display())),
                         }
                     }
                 }
@@ -470,12 +480,12 @@ impl<S: Source> Receiver<S> {
                         selected = Some(path.clone());
                     }
                 }
-                Err(e) => failed.push((path.clone(), e)),
+                Err(error_item) => failed.push((path.clone(), error_item)),
             }
         }
-        for (path, e) in failed {
-            if let Some(d) = &mut self.diagnostics {
-                d.disconnects += 1;
+        for (path, error_item) in failed {
+            if let Some(diagnostics_item) = &mut self.diagnostics {
+                diagnostics_item.disconnects += 1;
             }
             self.controllers.remove(&path);
             if self.owner.as_ref() == Some(&path) {
@@ -483,7 +493,7 @@ impl<S: Source> Receiver<S> {
                 owner_buttons = Buttons::default();
             }
             self.next_scan = now.saturating_add(Duration::from_secs(2));
-            self.error(format!("{} disconnected: {e}", path.display()));
+            self.error(format!("{} disconnected: {error_item}", path.display()));
         }
         if let Some(path) = selected {
             self.fresh_request = true;

@@ -49,6 +49,7 @@ impl Format {
         }
     }
 
+    /// Return the storage width of the selected DRM pixel format.
     pub fn bits_per_pixel(self) -> usize {
         match self {
             Self::Xrgb8888 => 32,
@@ -67,6 +68,7 @@ impl Format {
             .ok_or_else(invalid_layout)
     }
 
+    /// Require a row pitch large enough for the selected width and pixel format.
     pub(super) fn validate_pitch(self, width: usize, pitch: usize) -> io::Result<usize> {
         let row_bytes = self.row_bytes(width)?;
         let alignment = self.bits_per_pixel() / 8;

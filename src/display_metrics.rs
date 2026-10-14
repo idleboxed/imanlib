@@ -27,6 +27,7 @@ pub struct Timing {
     pub max_us: u128,
 }
 impl Timing {
+    /// Accumulate one duration sample in microseconds.
     pub fn record(&mut self, us: u128) {
         self.count += 1;
         self.sum_us += us;
@@ -60,6 +61,7 @@ pub struct Metric {
     pub sum: u64,
 }
 impl Metric {
+    /// Accumulate an available measurement, ignoring missing values.
     pub fn record(&mut self, value: Option<u64>) {
         if let Some(value) = value {
             self.min = if self.count == 0 {
@@ -85,19 +87,20 @@ pub struct Summary {
     pub timestamp_regressions: u64,
 }
 impl Summary {
-    pub fn record(&mut self, t: Timings) {
+    /// Accumulate the measured stages of one display step.
+    pub fn record(&mut self, timings: Timings) {
         self.steps += 1;
         for (metric, value) in self.metrics.iter_mut().zip([
-            t.render_us,
-            t.map_us,
-            t.copy_us,
-            t.unmap_us,
-            t.submit_us,
-            t.wait_us,
+            timings.render_us,
+            timings.map_us,
+            timings.copy_us,
+            timings.unmap_us,
+            timings.submit_us,
+            timings.wait_us,
         ]) {
             metric.record(value);
         }
-        if let Some(event) = t.event {
+        if let Some(event) = timings.event {
             if let Some(last) = self.last {
                 self.sequence_delta
                     .record(Some(u64::from(event.sequence.wrapping_sub(last.sequence))));
@@ -146,9 +149,10 @@ pub struct Sample {
     pub operation_ok: Option<bool>,
 }
 impl Sample {
+    /// Report whether the sample contains a coherent backend and bounded display information.
     pub fn validate(&self) -> bool {
-        self.kms.as_ref().is_none_or(|k| {
-            k.connector != 0 && k.encoder != 0 && k.crtc != 0 && k.width != 0 && k.height != 0
+        self.kms.as_ref().is_none_or(|kms| {
+            kms.connector != 0 && kms.encoder != 0 && kms.crtc != 0 && kms.width != 0 && kms.height != 0
         }) && match self.backend {
             Backend::Drm => self.kms.is_some() && self.probe.is_none(),
             Backend::KmsProbe => self.probe.is_some() && self.render.is_none(),

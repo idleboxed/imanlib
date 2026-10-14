@@ -36,14 +36,14 @@ impl Counters {
         if !matches!(kind, 1 | 3) {
             return;
         }
-        if let Some(c) = self
+        if let Some(control) = self
             .controls
             .iter_mut()
-            .find(|c| (c.kind, c.code) == (kind, code))
+            .find(|control| (control.kind, control.code) == (kind, code))
         {
-            c.count = c.count.saturating_add(1);
-            c.min = c.min.min(value);
-            c.max = c.max.max(value);
+            control.count = control.count.saturating_add(1);
+            control.min = control.min.min(value);
+            control.max = control.max.max(value);
         } else if self.controls.len() < CONTROL_LIMIT {
             self.controls.push(ControlRange {
                 kind,
@@ -100,6 +100,7 @@ pub struct LogicalEdgeSampler {
     counts: [u64; LOGICAL_EDGE_COUNT],
 }
 impl LogicalEdgeSampler {
+    /// Count new pressed edges without counting held buttons repeatedly.
     pub fn record(&mut self, current: [bool; LOGICAL_EDGE_COUNT]) {
         for (index, down) in current.into_iter().enumerate() {
             if down && !self.previous[index] {
@@ -109,6 +110,7 @@ impl LogicalEdgeSampler {
         self.previous = current;
     }
 
+    /// Copy the accumulated logical button-edge counts.
     pub fn snapshot(&self) -> LogicalEdges {
         self.counts
     }
@@ -131,25 +133,26 @@ pub struct Sample {
     pub probe: Option<ProbeSummary>,
 }
 impl Sample {
+    /// Report whether device identities, capability lists and input counters fit the diagnostic contract.
     pub fn validate(&self) -> bool {
-        self.evdev_identity.as_ref().is_none_or(|d| {
-            d.path.len() <= 256
-                && d.name.len() <= 256
-                && d.vendor.as_ref().is_none_or(|s| s.len() <= 64)
-                && d.product.as_ref().is_none_or(|s| s.len() <= 64)
-                && d.axes.len() <= 8
-                && d.axes.iter().all(|a| a.code < 64 && a.min <= a.max)
+        self.evdev_identity.as_ref().is_none_or(|identity| {
+            identity.path.len() <= 256
+                && identity.name.len() <= 256
+                && identity.vendor.as_ref().is_none_or(|sample| sample.len() <= 64)
+                && identity.product.as_ref().is_none_or(|sample| sample.len() <= 64)
+                && identity.axes.len() <= 8
+                && identity.axes.iter().all(|axis| axis.code < 64 && axis.min <= axis.max)
         }) && self.channels.len() <= CHANNEL_LIMIT
-            && self.channels.iter().all(|c| c.generation != 0)
-            && [&self.evdev, &self.hid, &self.joydev].into_iter().all(|s| {
-                s.controls.len() <= CONTROL_LIMIT
-                    && s.controls
+            && self.channels.iter().all(|control| control.generation != 0)
+            && [&self.evdev, &self.hid, &self.joydev].into_iter().all(|sample| {
+                sample.controls.len() <= CONTROL_LIMIT
+                    && sample.controls
                         .iter()
-                        .all(|c| matches!(c.kind, 1 | 3) && c.min <= c.max && c.count > 0)
+                        .all(|control| matches!(control.kind, 1 | 3) && control.min <= control.max && control.count > 0)
             })
             && self
                 .probe
                 .as_ref()
-                .is_none_or(|p| p.max_connected <= 8 && p.max_overlap <= 8)
+                .is_none_or(|probe_item| probe_item.max_connected <= 8 && probe_item.max_overlap <= 8)
     }
 }

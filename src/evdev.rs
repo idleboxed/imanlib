@@ -15,6 +15,7 @@ pub struct DeviceInfo {
 }
 
 impl DeviceInfo {
+    /// Check device capability ranges and reject oversized or unsupported code lists.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.axis_codes.len() > 64
             || self.axis_codes.iter().any(|&code| code >= 64)

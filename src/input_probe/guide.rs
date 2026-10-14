@@ -41,6 +41,7 @@ pub struct Guide {
 }
 
 impl Guide {
+    /// Discard the pending operator candidate and its ambiguity state.
     pub fn clear_candidate(&mut self) {
         self.candidate = None;
         self.ambiguous = false;
@@ -48,9 +49,10 @@ impl Guide {
         self.first_start = None;
     }
 
+    /// Invalidate assignments affected by a disconnected generation and report whether the operator was lost.
     pub fn disconnected(&mut self, generation: u32) -> bool {
         self.clear_candidate();
-        if self.operator.is_some_and(|k| k.generation == generation) {
+        if self.operator.is_some_and(|channel| channel.generation == generation) {
             self.operator = None;
             self.players = [None; 4];
             self.observations.clear();
@@ -85,8 +87,8 @@ impl Guide {
         if stage == Stage::Finish {
             return (stage, records);
         }
-        let confirm = taps.iter().any(|k| Some(*k) == self.operator);
-        let other: Vec<_> = taps.iter().filter(|k| Some(**k) != self.operator).collect();
+        let confirm = taps.iter().any(|channel| Some(*channel) == self.operator);
+        let other: Vec<_> = taps.iter().filter(|channel| Some(**channel) != self.operator).collect();
         for &&key in &other {
             if matches!(stage, Stage::Player { .. } | Stage::Button { .. }) {
                 if self.candidate.is_some_and(|old| old != key) {
@@ -112,13 +114,13 @@ impl Guide {
         let next = match stage {
             Stage::Player { player } => {
                 if let Some(key) = self.candidate {
-                    if self.players.iter().flatten().any(|&g| g == key.generation) {
+                    if self.players.iter().flatten().any(|&generation_item| generation_item == key.generation) {
                         self.clear_candidate();
                         self.notice = "Этот поток уже выбран. Возьмите другой геймпад.";
                         return (stage, records);
                     }
                     self.players[usize::from(player - 1)] = Some(key.generation);
-                    self.observations.retain(|o| o.player != player);
+                    self.observations.retain(|observation| observation.player != player);
                     records.push(json!({"event":"player_selected","player":player,"generation":key.generation,"operator_confirmed":true}));
                     Stage::Button {
                         player,
@@ -132,7 +134,7 @@ impl Guide {
             Stage::Button { player, action } => {
                 if self
                     .candidate
-                    .is_some_and(|k| Some(k.generation) != self.players[usize::from(player - 1)])
+                    .is_some_and(|channel| Some(channel.generation) != self.players[usize::from(player - 1)])
                 {
                     self.clear_candidate();
                     self.notice = "Нажат другой поток. Повторите нужным геймпадом.";
@@ -140,13 +142,13 @@ impl Guide {
                 }
                 records.push(json!({"event":"step_result","player":player,"action":action,"key":self.candidate,"skipped":self.candidate.is_none(),"operator_confirmed":true,"mapping_written":false}));
                 self.observations
-                    .retain(|o| o.player != player || o.action != action);
+                    .retain(|observation| observation.player != player || observation.action != action);
                 self.observations.push(Observation {
                     player,
                     action,
                     key: self.candidate,
                 });
-                let index = ACTIONS.iter().position(|&a| a == action).unwrap();
+                let index = ACTIONS.iter().position(|&action_item| action_item == action).unwrap();
                 if index + 1 < ACTIONS.len() {
                     Stage::Button {
                         player,

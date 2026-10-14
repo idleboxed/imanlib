@@ -41,6 +41,7 @@ pub struct PollError {
     pub error: io::Error,
 }
 impl PollError {
+    /// Describe one peer or listener failure and the operation that produced it.
     pub fn new(peer: Option<u64>, operation: &'static str, error: io::Error) -> Self {
         Self { peer, operation, error }
     }
@@ -75,6 +76,7 @@ struct Forwarded {
     started: Instant,
 }
 pub struct Server {
+    clock: Box<dyn Fn() -> Instant + Send + Sync>,
     forwarded: Vec<Forwarded>,
     next_request: u64,
     listener: UnixListener,
@@ -87,7 +89,13 @@ pub struct Server {
     _socket_directory: File,
 }
 impl Server {
+    /// Create a private socket on tmpfs, using the system's monotonic clock.
     pub fn bind(parent: &Path) -> io::Result<Self> {
+        Self::bind_with_clock(parent, Instant::now)
+    }
+    /// Create the same server with a caller-owned monotonic clock for its deadlines.
+    /// The clock must never move backwards; socket I/O still uses real bounded waits.
+    pub fn bind_with_clock(parent: &Path, clock: impl Fn() -> Instant + Send + Sync + 'static) -> io::Result<Self> {
         if !parent.is_absolute() {
             return Err(io::Error::other("IPC parent must be absolute"));
         }
@@ -110,6 +118,7 @@ impl Server {
             UnixListener::bind(format!("/proc/self/fd/{}/control.sock", dir.as_raw_fd()))?;
         listener.set_nonblocking(true)?;
         Ok(Self {
+            clock: Box::new(clock),
             forwarded: Vec::new(),
             next_request: 1,
             listener,
@@ -121,17 +130,20 @@ impl Server {
             _socket_directory: dir,
         })
     }
+    /// Return the private socket path owned by this server.
     pub fn path(&self) -> &Path {
         &self.path
     }
+    /// Report whether the given peer is still registered.
     pub fn connected(&self, id: u64) -> bool {
-        self.peers.iter().any(|p| p.id == id)
+        self.peers.iter().any(|peer_item| peer_item.id == id)
     }
+    /// Queue a bounded message for one registered peer; delivery is not yet acknowledged.
     pub fn send(&mut self, id: u64, message: &Message) -> io::Result<()> {
         let peer = self
             .peers
             .iter_mut()
-            .find(|p| p.id == id)
+            .find(|peer_item| peer_item.id == id)
             .ok_or_else(|| io::Error::other("IPC peer gone"))?;
         peer.channel.queue(message, RESPONSE_LIMIT)
     }
@@ -141,7 +153,7 @@ impl Server {
         if !incoming.request.valid() || target == incoming.peer {
             return Err(io::Error::other("invalid forwarded request"));
         }
-        if self.forwarded.len() >= 4 || self.forwarded.iter().any(|f| f.origin == incoming.peer) {
+        if self.forwarded.len() >= 4 || self.forwarded.iter().any(|forwarded_item| forwarded_item.origin == incoming.peer) {
             return Err(io::Error::other("IPC forwarding queue is full"));
         }
         let id = self.next_request;
@@ -156,12 +168,13 @@ impl Server {
             target,
             origin: incoming.peer,
             original_id: incoming.request.id,
-            started: Instant::now(),
+            started: (self.clock)(),
         });
         Ok(())
     }
     /// Peer read/write failures close only that connection; the owner handles diagnostics.
     pub fn poll(&mut self, service_peer: Option<u64>, service_pid: Option<u32>) -> Poll {
+        let now = (self.clock)();
         let mut result = Poll::default();
         // At most eight accepts and eight requests per host tick.
         for _ in 0..8 {
@@ -228,7 +241,7 @@ impl Server {
                         pid: cred.pid as u32,
                         channel,
                         last_id: 0,
-                        active: Instant::now(),
+                        active: now,
                     });
                     self.next_peer += 1;
                 }
@@ -237,7 +250,7 @@ impl Server {
         }
         let mut replies = Vec::new();
         self.peers.retain_mut(|peer| {
-            if service_peer != Some(peer.id) && peer.active.elapsed() > Duration::from_secs(30) {
+            if service_peer != Some(peer.id) && now.saturating_duration_since(peer.active) > Duration::from_secs(30) {
                 return false;
             }
             if let Err(error) = peer.channel.flush() {
@@ -257,7 +270,7 @@ impl Server {
                         ));
                         return false;
                     }
-                    peer.active = Instant::now();
+                    peer.active = now;
                     if request.id <= peer.last_id {
                         let response = Message::Response(Response::error(
                             request.id,
@@ -304,7 +317,7 @@ impl Server {
             if let Some(index) = self
                 .forwarded
                 .iter()
-                .position(|f| f.target == peer && f.id == response.id)
+                .position(|forwarded_item| forwarded_item.target == peer && forwarded_item.id == response.id)
             {
                 let forwarded = self.forwarded.remove(index);
                 response.id = forwarded.original_id;
@@ -319,21 +332,21 @@ impl Server {
             }
         }
         for index in (0..self.forwarded.len()).rev() {
-            let f = &self.forwarded[index];
-            if !self.connected(f.target)
-                || !self.connected(f.origin)
-                || f.started.elapsed() > Duration::from_secs(4)
+            let forwarded_item = &self.forwarded[index];
+            if !self.connected(forwarded_item.target)
+                || !self.connected(forwarded_item.origin)
+                || now.saturating_duration_since(forwarded_item.started) > Duration::from_secs(4)
             {
-                let f = self.forwarded.remove(index);
+                let forwarded_item = self.forwarded.remove(index);
                 if let Err(error) = self.send(
-                    f.origin,
+                    forwarded_item.origin,
                     &Message::Response(Response::error(
-                        f.original_id,
+                        forwarded_item.original_id,
                         "delivery_unknown",
                         "Service disconnected or timed out; action may have been applied; no retry",
                     )),
                 ) {
-                    result.errors.push(PollError::new(Some(f.origin), "reply", error));
+                    result.errors.push(PollError::new(Some(forwarded_item.origin), "reply", error));
                 }
             }
         }

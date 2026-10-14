@@ -28,12 +28,15 @@ pub struct Automatic<E: EvdevSource, H: HidSource> {
     owner: Option<Backend>,
 }
 impl<E: EvdevSource, H: HidSource> Automatic<E, H> {
+    /// Combine supplied evdev and optional HID receivers without polling or opening devices.
     pub fn new(evdev: Receiver<E>, hid: Option<Receivers<H>>) -> Self {
         Self { evdev, hid, owner: None }
     }
+    /// Return the backend currently owning menu input, if any.
     pub fn owner(&self) -> Option<Backend> {
         self.owner
     }
+    /// Enable bounded counters in the underlying receivers.
     pub fn enable_diagnostics(&mut self) {
         self.evdev.enable_diagnostics();
         if let Some(hid) = &mut self.hid {
@@ -60,6 +63,7 @@ impl<E: EvdevSource, H: HidSource> Automatic<E, H> {
             owner: hid_owner == Some(channel.id),
         }).collect();
     }
+    /// Poll both backends and select one neutral-to-active input owner without alias takeover.
     pub fn poll(&mut self, now: Duration) -> Buttons {
         // A newly available HID alias must not evict an already active evdev
         // representation merely by opening. Its reports are drained but blocked.

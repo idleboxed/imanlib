@@ -19,15 +19,21 @@ use std::{
 pub const EVENT_BYTES: usize = 2 * std::mem::size_of::<libc::c_ulong>() + 8;
 
 pub trait Pad {
+    /// Borrow the checked metadata of this open input device.
     fn info(&self) -> &DeviceInfo;
+    /// Read one nonblocking evdev event; None means no event is currently available.
     fn read(&mut self) -> io::Result<Option<Event>>;
+    /// Read the currently held kernel key codes to establish or restore a baseline.
     fn keys_down(&mut self) -> io::Result<Vec<u16>>;
+    /// Read current absolute-axis values, or report that snapshots are unsupported.
     fn axes_state(&mut self) -> io::Result<BTreeMap<u8, i32>> {
         Err(io::Error::other("axis snapshots unavailable"))
     }
 }
 pub trait Source {
+    /// List permitted candidate device paths without acquiring menu ownership.
     fn discover(&mut self) -> io::Result<Vec<PathBuf>>;
+    /// Open and validate one candidate read-only; the returned object owns its device resources.
     fn open(&mut self, path: &Path) -> io::Result<Box<dyn Pad>>;
 }
 
@@ -35,6 +41,7 @@ pub struct ProfileSource {
     profiles: Vec<Profile>,
 }
 impl ProfileSource {
+    /// Create a read-only source with profiles; devices are opened only by explicit source operations.
     pub fn new(profiles: Vec<Profile>) -> Self {
         Self { profiles }
     }
@@ -55,6 +62,7 @@ pub struct DiagnosticSource {
     conflicts: Vec<Conflict>,
 }
 impl DiagnosticSource {
+    /// Create a diagnostic source with known profiles and conflicts; construction does not open devices.
     pub fn new(profiles: Vec<Profile>, conflicts: Vec<Conflict>) -> Self { Self { profiles, conflicts } }
 }
 impl Source for DiagnosticSource {
@@ -87,15 +95,16 @@ fn text_field(path: &Path) -> io::Result<String> {
     Ok(String::from_utf8_lossy(&bytes)
         .trim()
         .chars()
-        .map(|c| if c.is_control() { '?' } else { c })
+        .map(|character| if character.is_control() { '?' } else { character })
         .collect())
 }
+/// Read bounded sanitized diagnostic text, retaining an explicit error when unavailable.
 pub(crate) fn small_text(path: &Path) -> String {
-    text_field(path).unwrap_or_else(|e| format!("ERROR: {e}"))
+    text_field(path).unwrap_or_else(|error_item| format!("ERROR: {error_item}"))
 }
 fn event_name(name: &str) -> bool {
     name.strip_prefix("event")
-        .is_some_and(|s| !s.is_empty() && s.len() <= 3 && s.bytes().all(|b| b.is_ascii_digit()))
+        .is_some_and(|text_item| !text_item.is_empty() && text_item.len() <= 3 && text_item.bytes().all(|byte| byte.is_ascii_digit()))
 }
 struct InputIdentity {
     bus: u16,
@@ -118,7 +127,7 @@ impl InputIdentity {
     }
 
     fn matches(&self, profiles: &[Profile]) -> usize {
-        profiles.iter().filter(|p| p.matches(u32::from(self.bus), self.vendor, self.product, &self.name)).count()
+        profiles.iter().filter(|profile_item| profile_item.matches(u32::from(self.bus), self.vendor, self.product, &self.name)).count()
     }
 }
 
@@ -132,7 +141,7 @@ fn gamepad_capabilities(keys: &[u16], axes: &[u16]) -> bool {
 pub fn diagnostic_gamepad(info: &DeviceInfo) -> bool {
     info.validate().is_ok() && info.identity.get("id/bustype").is_some_and(|bus|
         u16::from_str_radix(bus, 16) == Ok(3))
-        && gamepad_capabilities(&info.key_codes, &info.axis_codes.iter().map(|&v| u16::from(v)).collect::<Vec<_>>())
+        && gamepad_capabilities(&info.key_codes, &info.axis_codes.iter().map(|&value_item| u16::from(value_item)).collect::<Vec<_>>())
 }
 
 // sysfs prints most-significant kernel unsigned-long first, unlike EVIOCGBIT.
@@ -145,7 +154,7 @@ fn capability_codes(path: &Path, limit: usize) -> io::Result<Vec<u16>> {
     }
     let mut codes = Vec::new();
     for (index, word) in words.into_iter().rev().enumerate() {
-        if word.len() > width / 4 || !word.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if word.len() > width / 4 || !word.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err(io::Error::other("invalid sysfs capability bitmap word"));
         }
         let bits = usize::from_str_radix(word, 16)
@@ -193,6 +202,7 @@ pub fn input_inventory(input: &Path, sysfs: &Path, profiles: &[Profile]) -> serd
     inventory(input, sysfs, profiles, false, &[])
 }
 
+/// Read a bounded device inventory with profile conflicts included, without acquiring input ownership.
 pub fn diagnostic_input_inventory(input: &Path, sysfs: &Path, profiles: &[Profile], conflicts: &[Conflict]) -> serde_json::Value {
     inventory(input, sysfs, profiles, true, conflicts)
 }
@@ -264,20 +274,20 @@ fn inventory(input: &Path, sysfs: &Path, profiles: &[Profile], diagnostic: bool,
 
 fn bits(bytes: &[u8]) -> Vec<u16> {
     (0..bytes.len() * 8)
-        .filter(|&i| bytes[i / 8] & (1 << (i % 8)) != 0)
-        .map(|i| i as u16)
+        .filter(|&index_item| bytes[index_item / 8] & (1 << (index_item % 8)) != 0)
+        .map(|index_item| index_item as u16)
         .collect()
 }
 fn discover(profiles: &[Profile], diagnostic: bool, conflicts: &[Conflict]) -> io::Result<Vec<PathBuf>> {
     if profiles.is_empty() && !diagnostic { return Ok(Vec::new()); }
     let entries = match fs::read_dir(crate::input::INPUT_DIR) {
-        Ok(v) => v,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(e),
+        Ok(value_item) => value_item,
+        Err(error_item) if error_item.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error_item) => return Err(error_item),
     };
     let mut paths = Vec::new();
-    for (i, entry) in entries.enumerate() {
-        if i >= 256 {
+    for (index_item, entry) in entries.enumerate() {
+        if index_item >= 256 {
             return Err(io::Error::other("input directory exceeds diagnostic limit"));
         }
         let entry = entry?;
@@ -301,8 +311,8 @@ fn open(path: &Path, profiles: &[Profile], diagnostic: bool, conflicts: &[Confli
     }
     let name = path
         .file_name()
-        .and_then(|s| s.to_str())
-        .filter(|s| event_name(s))
+        .and_then(|text_item| text_item.to_str())
+        .filter(|text_item| event_name(text_item))
         .ok_or_else(|| io::Error::other("invalid event name"))?;
     let sys = Path::new("/sys/class/input").join(name);
     if !eligible(&sys, profiles, diagnostic, conflicts) {
@@ -324,11 +334,11 @@ fn open(path: &Path, profiles: &[Profile], diagnostic: bool, conflicts: &[Confli
     query(&file, 0x02, &mut id)?;
     let mut name_buf = [0u8; 257];
     query(&file, 0x06, &mut name_buf)?;
-    let name = String::from_utf8_lossy(name_buf.split(|&b| b == 0).next().unwrap_or_default())
+    let name = String::from_utf8_lossy(name_buf.split(|&byte| byte == 0).next().unwrap_or_default())
         .into_owned();
     let matching = profiles
         .iter()
-        .filter(|p| p.matches(u32::from(id[0]), id[1], id[2], &name)).count();
+        .filter(|profile_item| profile_item.matches(u32::from(id[0]), id[1], id[2], &name)).count();
     if matching > 1 || (matching == 0 && !diagnostic) || name != InputIdentity::read(&sys)?.name {
         return Err(io::Error::other("evdev name mismatch"));
     }
@@ -343,7 +353,7 @@ fn open(path: &Path, profiles: &[Profile], diagnostic: bool, conflicts: &[Confli
     query(&file, 0x21, &mut keys)?;
     let mut axes = [0u8; 8];
     if ev[0] & 0x08 != 0 { query(&file, 0x23, &mut axes)?; }
-    let axis_codes: Vec<u8> = bits(&axes).into_iter().map(|n| n as u8).collect();
+    let axis_codes: Vec<u8> = bits(&axes).into_iter().map(|count_item| count_item as u8).collect();
     let mut abs_info = BTreeMap::new();
     for &code in &axis_codes {
         let mut info = [0i32; 6];
@@ -385,11 +395,11 @@ fn open(path: &Path, profiles: &[Profile], diagnostic: bool, conflicts: &[Confli
     if identity["name"] != name {
         return Err(io::Error::other("evdev/sysfs name mismatch"));
     }
-    for (i, field) in ["id/bustype", "id/vendor", "id/product", "id/version"]
+    for (index_item, field) in ["id/bustype", "id/vendor", "id/product", "id/version"]
         .iter()
         .enumerate()
     {
-        if identity[*field] != format!("{:04x}", id[i]) {
+        if identity[*field] != format!("{:04x}", id[index_item]) {
             return Err(io::Error::other("evdev/sysfs identity mismatch"));
         }
     }
@@ -426,8 +436,8 @@ impl Pad for Device {
                 .map(Some)
                 .ok_or_else(|| io::Error::other("invalid input_event")),
             Ok(_) => Err(io::Error::other("evdev disconnected or short event")),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(None),
-            Err(e) => Err(e),
+            Err(error_item) if error_item.kind() == io::ErrorKind::WouldBlock => Ok(None),
+            Err(error_item) => Err(error_item),
         }
     }
     fn keys_down(&mut self) -> io::Result<Vec<u16>> {

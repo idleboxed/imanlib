@@ -20,6 +20,7 @@ pub enum Action {
 }
 
 impl Action {
+    /// Parse one supported logical menu-action name.
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "up" => Some(Self::Up),
@@ -54,6 +55,7 @@ pub enum FilterValue<T> {
 }
 
 impl<T: PartialEq> FilterValue<T> {
+    /// Report whether an optional value satisfies this all, unknown or exact-value filter.
     pub fn matches(&self, value: &Option<T>) -> bool {
         match self {
             Self::All => true,
@@ -102,13 +104,15 @@ pub struct Handoff {
     pub state: GuiState,
 }
 
+/// Report whether a ROM identity is exactly 64 lowercase hexadecimal characters.
 pub fn valid_hash(hash: &str) -> bool {
     hash.len() == 64
         && hash
             .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+/// Report whether a single bounded ROM path component is safe for the shared protocol.
 pub fn valid_image_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 255
@@ -117,9 +121,10 @@ pub fn valid_image_name(name: &str) -> bool {
         && !name.ends_with(['.', ' '])
         && !name
             .chars()
-            .any(|c| c.is_control() || "/\\:<>\"|?*".contains(c))
+            .any(|character| character.is_control() || "/\\:<>\"|?*".contains(character))
 }
 
+/// Report whether a bounded relative ROM path consists only of safe components.
 pub fn valid_image_path(path: &str) -> bool {
     path.len() <= 512 && path.split('/').all(valid_image_name)
 }

@@ -17,7 +17,9 @@ pub struct Timing {
 
 /// Keeps the adapter's exact mode for SETCRTC without manufacturing a TV timing.
 pub trait DisplayMode: Copy + Eq + Debug {
+    /// Return this mode's dimensions and refresh timing.
     fn timing(self) -> Timing;
+    /// Report whether the connector marks this mode as preferred.
     fn preferred(self) -> bool;
 }
 
@@ -92,14 +94,14 @@ fn ids(values: impl IntoIterator<Item = u32>) -> io::Result<()> {
 }
 
 fn supported(mode: impl DisplayMode) -> bool {
-    let t = mode.timing();
-    let (hs, he, ht) = t.horizontal;
-    let (vs, ve, vt) = t.vertical;
+    let topology = mode.timing();
+    let (hs, he, ht) = topology.horizontal;
+    let (vs, ve, vt) = topology.vertical;
     // Linux UAPI INTERLACE (bit 4) and DBLSCAN (bit 5). No invented timings.
-    t.size == (1280, 720)
-        && t.clock > 0
-        && t.flags & ((1 << 4) | (1 << 5)) == 0
-        && t.vscan <= 1
+    topology.size == (1280, 720)
+        && topology.clock > 0
+        && topology.flags & ((1 << 4) | (1 << 5)) == 0
+        && topology.vscan <= 1
         && hs >= 1280
         && he > hs
         && ht > he
@@ -118,9 +120,9 @@ impl<M: DisplayMode> Topology<M> {
         for count in [self.connectors.len(), self.encoders.len(), self.crtcs.len()] {
             require((1..=32).contains(&count), "unexpected DRM resource counts")?;
         }
-        ids(self.connectors.iter().map(|v| v.id))?;
-        ids(self.encoders.iter().map(|v| v.id))?;
-        ids(self.crtcs.iter().map(|v| v.id))?;
+        ids(self.connectors.iter().map(|value| value.id))?;
+        ids(self.encoders.iter().map(|value| value.id))?;
+        ids(self.crtcs.iter().map(|value| value.id))?;
         for connector in &self.connectors {
             require(
                 connector.encoders.len() <= 32 && connector.modes.len() <= 128,
@@ -134,7 +136,7 @@ impl<M: DisplayMode> Topology<M> {
                 .chain(connector.current_encoder)
             {
                 require(
-                    self.encoders.iter().any(|e| e.id == encoder),
+                    self.encoders.iter().any(|error| error.id == encoder),
                     "unknown connector encoder",
                 )?;
             }
@@ -152,7 +154,7 @@ impl<M: DisplayMode> Topology<M> {
                 .chain(encoder.current_crtc)
             {
                 require(
-                    self.crtcs.iter().any(|c| c.id == crtc),
+                    self.crtcs.iter().any(|connector_item| connector_item.id == crtc),
                     "unknown encoder CRTC",
                 )?;
             }
@@ -167,11 +169,11 @@ impl<M: DisplayMode> Topology<M> {
         !self
             .encoders
             .iter()
-            .any(|e| e.id != encoder && e.current_crtc == Some(crtc))
+            .any(|error| error.id != encoder && error.current_crtc == Some(crtc))
             && !self
                 .connectors
                 .iter()
-                .any(|c| c.id != connector && c.current_encoder == Some(encoder))
+                .any(|connector_item| connector_item.id != connector && connector_item.current_encoder == Some(encoder))
     }
 
     /// Prefer the current route. Only a fully disabled, unshared CRTC is a fallback.
@@ -186,7 +188,7 @@ impl<M: DisplayMode> Topology<M> {
         let connected: Vec<_> = self
             .connectors
             .iter()
-            .filter(|c| c.connected && id.is_none_or(|id| id == c.id))
+            .filter(|connector_item| connector_item.connected && id.is_none_or(|id| id == connector_item.id))
             .collect();
         let [connector] = connected.as_slice() else {
             return Err(io::Error::other(
@@ -202,13 +204,13 @@ impl<M: DisplayMode> Topology<M> {
                 connector.encoders.contains(&id),
                 "current encoder is not advertised by display",
             )?;
-            let encoder = self.encoders.iter().find(|e| e.id == id).unwrap();
+            let encoder = self.encoders.iter().find(|error| error.id == id).unwrap();
             if let Some(id) = encoder.current_crtc {
                 require(
                     encoder.possible_crtcs.contains(&id),
                     "incompatible display encoder/CRTC",
                 )?;
-                let previous = *self.crtcs.iter().find(|c| c.id == id).unwrap();
+                let previous = *self.crtcs.iter().find(|connector_item| connector_item.id == id).unwrap();
                 require(
                     self.exclusive(connector.id, encoder.id, id),
                     "display CRTC is shared with another output",
@@ -235,9 +237,9 @@ impl<M: DisplayMode> Topology<M> {
             .modes
             .iter()
             .copied()
-            .filter(|m| supported(*m))
-            .find(|m| m.preferred())
-            .or_else(|| connector.modes.iter().copied().find(|m| supported(*m)))
+            .filter(|mode_item| supported(*mode_item))
+            .find(|mode_item| mode_item.preferred())
+            .or_else(|| connector.modes.iter().copied().find(|mode_item| supported(*mode_item)))
             .ok_or_else(|| io::Error::other("display does not advertise progressive 1280x720"))?;
         // Try the current encoder first, then the driver's advertised order, as BOX1 does.
         let order = connector.current_encoder.into_iter().chain(
@@ -248,7 +250,7 @@ impl<M: DisplayMode> Topology<M> {
                 .filter(|id| Some(*id) != connector.current_encoder),
         );
         for id in order {
-            let encoder = self.encoders.iter().find(|e| e.id == id).unwrap();
+            let encoder = self.encoders.iter().find(|error| error.id == id).unwrap();
             for previous in &self.crtcs {
                 if encoder.possible_crtcs.contains(&previous.id)
                     && encoder.current_crtc.is_none_or(|id| id == previous.id)
@@ -279,6 +281,7 @@ fn same_state<M: DisplayMode>(left: Crtc<M>, right: Crtc<M>) -> bool {
 }
 
 impl<M: DisplayMode> Output<M> {
+    /// Build the checked CRTC request for the selected route and framebuffer.
     pub fn enable_request(&self, framebuffer: u32) -> io::Result<Request<M>> {
         require(framebuffer != 0, "invalid DRM framebuffer")?;
         Ok(Request {
@@ -290,6 +293,7 @@ impl<M: DisplayMode> Output<M> {
         })
     }
 
+    /// Require current CRTC state to match this route and framebuffer.
     pub fn verify(&self, current: Crtc<M>, framebuffer: u32) -> io::Result<()> {
         require(
             framebuffer != 0
@@ -337,6 +341,7 @@ impl<M: DisplayMode> Output<M> {
         }))
     }
 
+    /// Require the CRTC to match its saved state after restoration.
     pub fn verify_restored(&self, current: Crtc<M>) -> io::Result<()> {
         require(
             same_state(current, self.previous),

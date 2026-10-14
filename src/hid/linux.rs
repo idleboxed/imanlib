@@ -19,6 +19,7 @@ pub struct LinuxSource {
     profiles: Vec<Profile>,
 }
 impl LinuxSource {
+    /// Create a read-only HID source with profiles; construction does not open devices.
     pub fn new(profiles: Vec<Profile>) -> Self {
         Self { profiles }
     }
@@ -48,8 +49,8 @@ fn identity(sys: &Path) -> io::Result<(u32, u16, u16, String)> {
     if parts.len() != 3 {
         return Err(invalid("invalid HID ID"));
     }
-    let number = |s| u32::from_str_radix(s, 16).map_err(|_| invalid("invalid HID ID"));
-    let narrow = |s| u16::try_from(number(s)?).map_err(|_| invalid("invalid HID VID/PID"));
+    let number = |text_item| u32::from_str_radix(text_item, 16).map_err(|_| invalid("invalid HID ID"));
+    let narrow = |text_item| u16::try_from(number(text_item)?).map_err(|_| invalid("invalid HID VID/PID"));
     Ok((
         number(parts[0])?,
         narrow(parts[1])?,
@@ -59,11 +60,11 @@ fn identity(sys: &Path) -> io::Result<(u32, u16, u16, String)> {
 }
 fn eligible(sys: &Path, profiles: &[Profile]) -> bool {
     identity(sys)
-        .is_ok_and(|(bus, vendor, product, name)| profiles.iter().filter(|p| p.matches(bus, vendor, product, &name)).count() == 1)
+        .is_ok_and(|(bus, vendor, product, name)| profiles.iter().filter(|profile| profile.matches(bus, vendor, product, &name)).count() == 1)
 }
 fn node_name(name: &str) -> bool {
     name.strip_prefix("hidraw")
-        .is_some_and(|s| !s.is_empty() && s.len() <= 3 && s.bytes().all(|b| b.is_ascii_digit()))
+        .is_some_and(|text_item| !text_item.is_empty() && text_item.len() <= 3 && text_item.bytes().all(|second_metadata| second_metadata.is_ascii_digit()))
 }
 // Linux _IOR('H', nr, T). Only read-only metadata ioctls are provided here.
 fn query<T>(file: &File, nr: u8, value: &mut T) -> io::Result<()> {
@@ -93,9 +94,9 @@ struct RawDescriptor {
 impl Source for LinuxSource {
     fn discover(&mut self) -> io::Result<Vec<PathBuf>> {
         let entries = match fs::read_dir("/sys/class/hidraw") {
-            Ok(e) => e,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(e),
+            Ok(error) => error,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error),
         };
         let mut paths = Vec::new();
         for (index, entry) in entries.enumerate() {
@@ -118,8 +119,8 @@ impl Source for LinuxSource {
         }
         let name = path
             .file_name()
-            .and_then(|n| n.to_str())
-            .filter(|n| node_name(n))
+            .and_then(|name_item| name_item.to_str())
+            .filter(|name_item| node_name(name_item))
             .ok_or_else(|| invalid("invalid hidraw node name"))?;
         let before = fs::symlink_metadata(path)?;
         if !before.file_type().is_char_device() {
@@ -128,7 +129,7 @@ impl Source for LinuxSource {
         let sys = Path::new("/sys/class/hidraw").join(name);
         let generation = sys.join("device").canonicalize()?;
         let (bus, vendor, product, name) = identity(&sys)?;
-        if self.profiles.iter().filter(|p| p.matches(bus, vendor, product, &name)).count() != 1 {
+        if self.profiles.iter().filter(|profile| profile.matches(bus, vendor, product, &name)).count() != 1 {
             return Err(invalid("HID device does not match profile"));
         }
         let file = OpenOptions::new()
@@ -136,8 +137,8 @@ impl Source for LinuxSource {
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
             .open(path)?;
         let opened = file.metadata()?;
-        let same = |a: &fs::Metadata, b: &fs::Metadata| {
-            a.dev() == b.dev() && a.ino() == b.ino() && a.rdev() == b.rdev()
+        let same = |first_metadata: &fs::Metadata, second_metadata: &fs::Metadata| {
+            first_metadata.dev() == second_metadata.dev() && first_metadata.ino() == second_metadata.ino() && first_metadata.rdev() == second_metadata.rdev()
         };
         if !opened.file_type().is_char_device() || !same(&before, &opened) {
             return Err(invalid("hidraw changed during open"));
@@ -149,7 +150,7 @@ impl Source for LinuxSource {
         }
         let mut raw_name = [0u8; 256];
         query(&file, 0x04, &mut raw_name)?;
-        if raw_name.split(|b| *b == 0).next() != Some(name.as_bytes()) {
+        if raw_name.split(|second_metadata| *second_metadata == 0).next() != Some(name.as_bytes()) {
             return Err(invalid("hidraw FD name mismatch"));
         }
         let mut size = 0u32;
@@ -200,9 +201,9 @@ impl Device for Raw {
                 io::ErrorKind::UnexpectedEof,
                 "hidraw disconnected",
             )),
-            Ok(n) => Ok(Some(n)),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(None),
-            Err(e) => Err(e),
+            Ok(name_item) => Ok(Some(name_item)),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) => Err(error),
         }
     }
 }

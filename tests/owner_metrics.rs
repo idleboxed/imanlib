@@ -8,9 +8,9 @@ use serde_json::json;
 
 #[test]
 fn display_events_keep_raw_clock_wrap_regression_and_missing_samples_distinct() {
-    let mut s = Summary::default();
+    let mut summary = Summary::default();
     for (sequence, timestamp_us) in [(u32::MAX, 100), (0, 110), (2, 90)] {
-        s.record(Timings {
+        summary.record(Timings {
             copy_us: Some(0),
             event: Some(EventStamp {
                 sequence,
@@ -19,26 +19,26 @@ fn display_events_keep_raw_clock_wrap_regression_and_missing_samples_distinct() 
             ..Default::default()
         });
     }
-    assert_eq!(s.steps, 3);
-    assert_eq!(s.metrics[0].count, 0);
-    assert_eq!(s.metrics[2].count, 3);
-    assert_eq!(s.sequence_delta.sum, 3);
-    assert_eq!(s.timestamp_delta_us.sum, 10);
-    assert_eq!(s.timestamp_regressions, 1);
-    let encoded = serde_json::to_string(&s).unwrap();
+    assert_eq!(summary.steps, 3);
+    assert_eq!(summary.metrics[0].count, 0);
+    assert_eq!(summary.metrics[2].count, 3);
+    assert_eq!(summary.sequence_delta.sum, 3);
+    assert_eq!(summary.timestamp_delta_us.sum, 10);
+    assert_eq!(summary.timestamp_regressions, 1);
+    let encoded = serde_json::to_string(&summary).unwrap();
     assert_eq!(serde_json::from_str::<Summary>(&encoded).unwrap().steps, 3);
 }
 
 #[test]
 fn passive_input_ranges_are_bounded_and_payloads_ignore_unknown_fields() {
-    let mut c = Counters::default();
-    for i in 0..20 {
-        c.event(3, i, i32::from(i));
+    let mut counters = Counters::default();
+    for index_item in 0..20 {
+        counters.event(3, index_item, i32::from(index_item));
     }
-    c.event(3, 0, -7);
-    assert_eq!(c.controls.len(), CONTROL_LIMIT);
-    assert_eq!(c.controls_omitted, 12);
-    assert_eq!(c.controls[0].min, -7);
+    counters.event(3, 0, -7);
+    assert_eq!(counters.controls.len(), CONTROL_LIMIT);
+    assert_eq!(counters.controls_omitted, 12);
+    assert_eq!(counters.controls[0].min, -7);
     let mut value = serde_json::to_value(Sample::default()).unwrap();
     value["pid"] = json!(99);
     let sample: Sample = serde_json::from_value(value).unwrap();
